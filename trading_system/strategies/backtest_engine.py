@@ -62,6 +62,18 @@ class BacktestConfig:
     trailing_stop_distance: float = 0.025  # 追踪止损距离(2.5%)【从2%优化至2.5%】
     trailing_stop_step: float = 0.015  # 追踪止损步进(1.5%)【从1%优化至1.5%】
 
+    # 做多止盈止损（独立）
+    long_take_profit_ratio: float = 0.05       # 做多止盈 5%
+    long_stop_loss_ratio: float = 0.03         # 做多止损 3%
+    long_trailing_stop_activation: float = 0.04  # 做多追踪止损激活阈值
+    long_trailing_stop_distance: float = 0.02  # 做多追踪止损距离 2%
+
+    # 做空止盈止损（独立）
+    short_take_profit_ratio: float = 0.05       # 做空止盈 5%
+    short_stop_loss_ratio: float = 0.03         # 做空止损 3%
+    short_trailing_stop_activation: float = 0.04  # 做空追踪止损激活阈值
+    short_trailing_stop_distance: float = 0.02  # 做空追踪止损距离 2%
+
     # 限价单配置（新增 - 价格偏差检测）
     limit_order_enabled: bool = True  # 是否启用限价单模式
     price_deviation_tolerance: float = 0.001  # 价格偏差容忍度，默认0.1%
@@ -98,6 +110,8 @@ class TradeRecord:
     reason: str = ""
     stop_loss: float = 0.0
     take_profit: float = 0.0
+    long_position: float = 0.0
+    short_position: float = 0.0
 
 
 @dataclass
@@ -132,21 +146,24 @@ class FundingFeeCalculator:
         self.total_funding_fee_received = 0.0  # 累计收到的资金费用
         self.funding_records: List[Dict] = []  # 资金费用记录
 
-    def check_settlement(self, current_time: datetime, position: float,
-                        position_value: float, funding_rate: float = 0.0001) -> float:
+    def check_settlement(self, current_time: datetime, long_position: float,
+                        long_position_value: float, short_position: float,
+                        short_position_value: float, funding_rate: float = 0.0001) -> float:
         """
         检查是否需要结算资金费用
 
         Args:
             current_time: 当前时间
-            position: 当前持仓数量（正数=多头，负数=空头）
-            position_value: 持仓价值（绝对值）
+            long_position: 多头持仓数量（>=0）
+            long_position_value: 多头持仓价值
+            short_position: 空头持仓数量（>0）
+            short_position_value: 空头持仓价值
             funding_rate: 当前资金费率（默认0.01%）
 
         Returns:
             本次结算的资金费用（正数=收到，负数=支付）
         """
-        if position == 0:
+        if long_position == 0 and short_position == 0:
             return 0.0
 
         current_hour = current_time.hour
@@ -160,13 +177,13 @@ class FundingFeeCalculator:
             return 0.0
 
         # 计算资金费用
-        # 公式：资金费用 = 持仓价值 * 费率 * (持仓方向)
-        # 多头：费率>0时支付（负值），费率<0时收取（正值）
-        # 空头：与多头相反
-        if position > 0:  # 多头
-            fee = -position_value * funding_rate  # 支付费用
-        else:  # 空头
-            fee = position_value * funding_rate  # 收取费用（空头与多头相反）
+        # 多头持仓：费率>0时支付（负值），费率<0时收取（正值）
+        # 空头持仓：与多头相反
+        fee = 0.0
+        if long_position > 0:
+            fee += -long_position_value * funding_rate
+        if short_position > 0:
+            fee += short_position_value * funding_rate
 
         # 更新累计值
         if fee < 0:
@@ -177,8 +194,10 @@ class FundingFeeCalculator:
         # 记录本次结算
         record = {
             "timestamp": current_time,
-            "position": position,
-            "position_value": position_value,
+            "long_position": long_position,
+            "short_position": short_position,
+            "long_position_value": long_position_value,
+            "short_position_value": short_position_value,
             "funding_rate": funding_rate,
             "fee": fee,
             "cumulative_paid": self.total_funding_fee_paid,
@@ -189,7 +208,8 @@ class FundingFeeCalculator:
 
         logger.info(
             f"[FundingFee] 结算资金费用: {fee:.4f} USDT "
-            f"(持仓:{position:.4f}, 价值:${position_value:.2f}, 费率:{funding_rate*100:.4f}%)"
+            f"(多头:{long_position:.4f}/${long_position_value:.2f}, "
+            f"空头:{short_position:.4f}/${short_position_value:.2f}, 费率:{funding_rate*100:.4f}%)"
         )
 
         return fee
@@ -257,6 +277,10 @@ class BacktestEngine:
         self.balance = self.config.initial_balance
         self.position = 0.0
         self.avg_price = 0.0
+        self.long_position = 0.0
+        self.short_position = 0.0
+        self.long_avg_price = 0.0
+        self.short_avg_price = 0.0
         self.trades: List[TradeRecord] = []
         self.equity_curve: List[float] = []
         self.timestamps: List[datetime] = []
@@ -273,6 +297,18 @@ class BacktestEngine:
         self.highest_price_since_entry: float = 0.0  # 入场后最高价（多单用）
         self.lowest_price_since_entry: float = float('inf')  # 入场后最低价（空单用）
         self.is_trailing_stop_active: bool = False  # 追踪止损是否激活
+
+        # 做多独立追踪止损变量
+        self.long_trailing_stop_price: float = 0.0
+        self.long_highest_price: float = 0.0
+        self.long_initial_stop_loss_price: float = 0.0
+        self.long_is_trailing_active: bool = False
+
+        # 做空独立追踪止损变量
+        self.short_trailing_stop_price: float = float('inf')
+        self.short_lowest_price: float = float('inf')
+        self.short_initial_stop_loss_price: float = float('inf')
+        self.short_is_trailing_active: bool = False
 
         # 限价单统计（新增）
         self.cancelled_orders_count: int = 0  # 被取消的订单数量
@@ -493,16 +529,18 @@ class BacktestEngine:
             if self.config.use_atr_stop_loss or self.config.use_trailing_stop:
                 self._calculate_current_atr(strategy)
 
-            # 检查止损止盈
-            if self.position > 0:
-                self._check_advanced_stop_loss(kline)  # 使用新的高级止损方法
+            # 检查止损止盈（分多空独立检查）
+            if self.long_position > 0:
+                self._check_long_stop_loss(kline)
+            if self.short_position > 0:
+                self._check_short_stop_loss(kline)
 
             # 执行交易
             if signal and signal.get("action") != "HOLD":
                 self._execute_trade(signal, kline)
 
             # 结算资金费用（合约交易）
-            if self.config.enable_funding_fee and self.position != 0:
+            if self.config.enable_funding_fee and (self.long_position != 0 or self.short_position != 0):
                 funding_fee = self._settle_funding_fee(kline)
                 if funding_fee != 0:
                     self.balance += funding_fee  # 调整账户余额
@@ -520,7 +558,7 @@ class BacktestEngine:
         结算资金费用（合约交易）
 
         在每根K线处理时检查是否到达结算时间点，
-        如果是则计算并结算资金费用
+        如果是则分别计算多头和空头的资金费用并汇总
 
         Args:
             kline: 当前K线数据
@@ -529,7 +567,6 @@ class BacktestEngine:
             本次结算的资金费用（正数=收到，负数=支付，0=无需结算）
         """
         try:
-            # 获取当前时间和价格
             if hasattr(kline, 'close'):
                 current_price = float(kline.close)
                 current_time = kline.open_time
@@ -537,14 +574,15 @@ class BacktestEngine:
                 current_price = float(kline["close"])
                 current_time = kline["open_time"]
 
-            # 计算持仓价值
-            position_value = abs(self.position * current_price)
+            long_position_value = abs(self.long_position * current_price)
+            short_position_value = abs(self.short_position * current_price)
 
-            # 检查并结算资金费用
             funding_fee = self.funding_calculator.check_settlement(
                 current_time=current_time,
-                position=self.position,
-                position_value=position_value,
+                long_position=self.long_position,
+                long_position_value=long_position_value,
+                short_position=self.short_position,
+                short_position_value=short_position_value,
                 funding_rate=self.config.funding_rate
             )
 

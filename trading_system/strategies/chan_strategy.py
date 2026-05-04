@@ -215,14 +215,21 @@ class ChanStrategy(BaseStrategy):
         # Binance客户端（可选）
         self.binance_client: Optional[BinanceRestClient] = None
 
-        # 信号去重机制
-        self.last_signal_info = {
-            "action": None,           # 上次信号类型 (BUY/SELL)
-            "pen_index": -1,          # 上次触发信号的笔索引
-            "kline_index": -1,        # 上次触发信号的K线索引
-            "cooldown_counter": 0     # 冷却期计数器
+        # 信号去重机制 - 独立的多空信号跟踪
+        self.long_signal_info = {
+            "action": None,           # 上次做多信号类型
+            "pen_index": -1,          # 上次触发做多信号的笔索引
+            "kline_index": -1,        # 上次触发做多信号的K线索引
+            "cooldown_counter": 0     # 做多冷却期计数器
         }
-        self.signal_cooldown_bars = 5  # 冷却期：同类型信号至少间隔N根K线（优化：10→5=2.5小时）
+        self.short_signal_info = {
+            "action": None,           # 上次做空信号类型
+            "pen_index": -1,          # 上次触发做空信号的笔索引
+            "kline_index": -1,        # 上次触发做空信号的K线索引
+            "cooldown_counter": 0     # 做空冷却期计数器
+        }
+        self.long_signal_cooldown_bars = 5   # 做多冷却期
+        self.short_signal_cooldown_bars = 5  # 做空冷却期
         self._trend_position_mult: float = 1.0  # EMA趋势仓位系数（方案A：分级过滤）
         self._time_position_mult: float = 1.0   # 时间仓位系数（方案B：亚盘降仓）
 
@@ -1841,8 +1848,9 @@ class ChanStrategy(BaseStrategy):
         - 行为与原版完全一致（向后兼容）
 
         信号去重机制：
-        - 同类型信号（BUY/SELL）至少间隔 signal_cooldown_bars 根K线
-        - 不同类型信号可以立即切换（BUY→SELL 或 SELL→BUY）
+        - 做多信号至少间隔 long_signal_cooldown_bars 根K线
+        - 做空信号至少间隔 short_signal_cooldown_bars 根K线
+        - 多空信号独立冷却，互不影响
         - 避免同一背驰结构在连续多根K线重复触发
 
         返回：
@@ -1889,18 +1897,20 @@ class ChanStrategy(BaseStrategy):
             "ma_info": {}
         }
 
-        # 更新冷却期计数器
-        if self.last_signal_info["cooldown_counter"] > 0:
-            self.last_signal_info["cooldown_counter"] -= 1
+        # 更新冷却期计数器（多空独立递减）
+        if self.long_signal_info["cooldown_counter"] > 0:
+            self.long_signal_info["cooldown_counter"] -= 1
+        if self.short_signal_info["cooldown_counter"] > 0:
+            self.short_signal_info["cooldown_counter"] -= 1
 
-        # 底背驰 -> 平仓空单 + 开多
+        # 底背驰 -> 纯做多信号
         if last_pen.direction == "down":
             if self._check_bottom_divergence(last_pen):
-                # 检查冷却期：如果是同类型信号且在冷却期内，则跳过
-                if (self.last_signal_info["action"] == "BUY" and
-                    self.last_signal_info["pen_index"] == len(self.pens) - 1 and
-                    self.last_signal_info["cooldown_counter"] > 0):
-                    logger.debug(f"[ChanStrategy] BUY信号冷却期中，跳过 (剩余{self.last_signal_info['cooldown_counter']}根K线)")
+                # 检查做多冷却期
+                if (self.long_signal_info["action"] == "BUY" and
+                    self.long_signal_info["pen_index"] == len(self.pens) - 1 and
+                    self.long_signal_info["cooldown_counter"] > 0):
+                    logger.debug(f"[ChanStrategy] BUY信号冷却期中，跳过 (剩余{self.long_signal_info['cooldown_counter']}根K线)")
                     return None
 
                 # 原始信号
@@ -1930,12 +1940,12 @@ class ChanStrategy(BaseStrategy):
                         "position": "long"
                     })
 
-                # 记录信号信息并启动冷却期
-                self.last_signal_info.update({
+                # 记录做多信号信息并启动冷却期
+                self.long_signal_info.update({
                     "action": "BUY",
                     "pen_index": len(self.pens) - 1,
                     "kline_index": current_kline_idx,
-                    "cooldown_counter": self.signal_cooldown_bars
+                    "cooldown_counter": self.long_signal_cooldown_bars
                 })
 
                 # ===== 方案4：盈亏比过滤器 =====
@@ -1952,7 +1962,7 @@ class ChanStrategy(BaseStrategy):
                 logger.info(f"[ChanStrategy] 信号: {signal}")
                 return signal
 
-        # 顶背驰 -> 平仓多单 + 开空（三层检测机制）
+        # 顶背驰 -> 纯做空信号（三层检测机制）
         elif last_pen.direction == "up":
             sell_signal_type = None
 
@@ -1973,11 +1983,11 @@ class ChanStrategy(BaseStrategy):
 
             # 如果任何一层检测到卖出信号
             if sell_signal_type:
-                # 检查冷却期：如果是同类型信号且在冷却期内，则跳过
-                if (self.last_signal_info["action"] == "SELL" and
-                    self.last_signal_info["pen_index"] == len(self.pens) - 1 and
-                    self.last_signal_info["cooldown_counter"] > 0):
-                    logger.debug(f"[ChanStrategy] SELL信号冷却期中，跳过 (剩余{self.last_signal_info['cooldown_counter']}根K线)")
+                # 检查做空冷却期
+                if (self.short_signal_info["action"] == "SELL" and
+                    self.short_signal_info["pen_index"] == len(self.pens) - 1 and
+                    self.short_signal_info["cooldown_counter"] > 0):
+                    logger.debug(f"[ChanStrategy] SELL信号冷却期中，跳过 (剩余{self.short_signal_info['cooldown_counter']}根K线)")
                     return None
 
                 base_action = "SELL"
@@ -2012,12 +2022,12 @@ class ChanStrategy(BaseStrategy):
                         "signal_type": sell_signal_type
                     })
 
-                # 记录信号信息并启动冷却期
-                self.last_signal_info.update({
+                # 记录做空信号信息并启动冷却期
+                self.short_signal_info.update({
                     "action": "SELL",
                     "pen_index": len(self.pens) - 1,
                     "kline_index": current_kline_idx,
-                    "cooldown_counter": self.signal_cooldown_bars
+                    "cooldown_counter": self.short_signal_cooldown_bars
                 })
 
                 # ===== 方案4：盈亏比过滤器 =====
