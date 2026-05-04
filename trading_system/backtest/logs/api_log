@@ -1,0 +1,78 @@
+2026-05-02 17:05:16 - root - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:05:16 - root - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:05:16 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 17:05:16 - trading_system.data.backtest_data - INFO - 成功加载 289 条K线数据
+2026-05-02 17:05:16 - trading_system.strategies.backtest_engine - INFO - 成功加载 289 条5mK线数据
+2026-05-02 17:05:16 - trading_system.data.backtest_data - INFO - 成功加载 2 条K线数据
+2026-05-02 17:05:16 - trading_system.strategies.backtest_engine - INFO - 成功加载 2 条日线K线数据
+2026-05-02 17:05:16 - __main__ - INFO - Loaded data: 5m=289 rows, 1d=2 rows
+2026-05-02 17:05:37 - trading_system.strategies.backtest_engine - INFO - 缠论分析图表已保存到: backtest_plot.png
+2026-05-02 17:05:37 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\chan_strategy_backtest_results.json
+2026-05-02 17:05:37 - __main__ - INFO - Generating charts in E:\Auto_test\huyhf\trading_system\backtest\charts
+2026-05-02 17:30:18 - root - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:30:18 - root - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:30:18 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 17:30:18 - trading_system.data.backtest_data - INFO - 成功加载 289 条K线数据
+2026-05-02 17:30:18 - trading_system.strategies.backtest_engine - INFO - 成功加载 289 条5mK线数据
+2026-05-02 17:30:18 - trading_system.data.backtest_data - INFO - 成功加载 2 条K线数据
+2026-05-02 17:30:18 - trading_system.strategies.backtest_engine - INFO - 成功加载 2 条日线K线数据
+2026-05-02 17:30:18 - __main__ - INFO - Loaded data: 5m=289 rows, 1d=2 rows
+2026-05-02 17:30:34 - trading_system.strategies.backtest_engine - INFO - 缠论分析图表已保存到: backtest_plot.png
+2026-05-02 17:30:34 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\chan_strategy_backtest_results.json
+2026-05-02 17:30:34 - __main__ - INFO - Generating charts in E:\Auto_test\huyhf\trading_system\backtest\charts
+2026-05-02 17:43:58 - root - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:43:58 - root - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:43:58 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 17:54:20 - root - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:54:20 - root - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:54:20 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 17:54:32 - root - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:54:32 - root - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:54:32 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 17:57:10 - root - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:57:10 - root - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 17:57:10 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 17:57:10 - trading_system.data.backtest_data - INFO - 成功加载 289 条K线数据
+2026-05-02 17:57:10 - trading_system.strategies.backtest_engine - INFO - 成功加载 289 条5mK线数据
+2026-05-02 17:57:10 - trading_system.data.backtest_data - INFO - 成功加载 2 条K线数据
+2026-05-02 17:57:10 - trading_system.strategies.backtest_engine - INFO - 成功加载 2 条日线K线数据
+2026-05-02 17:57:10 - __main__ - INFO - Loaded data: 5m=289 rows, 1d=2 rows
+2026-05-02 17:57:31 - trading_system.strategies.backtest_engine - INFO - 图表已保存到: backtest_plot.png
+2026-05-02 17:57:31 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\backtest_results.json
+2026-05-02 17:57:31 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\chan_strategy_backtest_results.json
+2026-05-02 18:06:34 - root - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 18:06:34 - root - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 18:06:34 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 18:06:34 - trading_system.data.backtest_data - INFO - 成功加载 289 条K线数据
+2026-05-02 18:06:34 - trading_system.strategies.backtest_engine - INFO - 成功加载 289 条5mK线数据
+2026-05-02 18:06:34 - trading_system.data.backtest_data - INFO - 成功加载 2 条K线数据
+2026-05-02 18:06:34 - trading_system.strategies.backtest_engine - INFO - 成功加载 2 条日线K线数据
+2026-05-02 18:06:34 - __main__ - INFO - Loaded data: 5m=289 rows, 1d=2 rows
+2026-05-02 18:07:10 - trading_system.strategies.backtest_engine - INFO - 图表已保存到: backtest_plot.png
+2026-05-02 18:07:10 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\backtest_results.json
+2026-05-02 18:07:10 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\chan_strategy_backtest_results.json
+2026-05-02 18:07:10 - __main__ - INFO - Generating charts in E:\Auto_test\huyhf\trading_system\backtest\charts
+2026-05-02 18:07:56 - root - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 18:07:56 - root - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 18:07:56 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 18:07:56 - trading_system.data.backtest_data - INFO - 成功加载 289 条K线数据
+2026-05-02 18:07:56 - trading_system.strategies.backtest_engine - INFO - 成功加载 289 条5mK线数据
+2026-05-02 18:07:56 - trading_system.data.backtest_data - INFO - 成功加载 2 条K线数据
+2026-05-02 18:07:56 - trading_system.strategies.backtest_engine - INFO - 成功加载 2 条日线K线数据
+2026-05-02 18:07:56 - __main__ - INFO - Loaded data: 5m=289 rows, 1d=2 rows
+2026-05-02 18:08:16 - trading_system.strategies.backtest_engine - INFO - 图表已保存到: backtest_plot.png
+2026-05-02 18:08:16 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\backtest_results.json
+2026-05-02 18:08:16 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\chan_strategy_backtest_results.json
+2026-05-02 18:08:16 - __main__ - INFO - Generating charts in E:\Auto_test\huyhf\trading_system\backtest\charts
+2026-05-02 18:09:40 - root - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 18:09:40 - root - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-02 18:09:40 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 18:09:40 - trading_system.data.backtest_data - INFO - 成功加载 289 条K线数据
+2026-05-02 18:09:40 - trading_system.strategies.backtest_engine - INFO - 成功加载 289 条5mK线数据
+2026-05-02 18:09:40 - trading_system.data.backtest_data - INFO - 成功加载 2 条K线数据
+2026-05-02 18:09:40 - trading_system.strategies.backtest_engine - INFO - 成功加载 2 条日线K线数据
+2026-05-02 18:09:40 - __main__ - INFO - Loaded data: 5m=289 rows, 1d=2 rows
+2026-05-02 18:10:00 - trading_system.strategies.backtest_engine - INFO - 图表已保存到: backtest_plot.png
+2026-05-02 18:10:00 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\backtest_results.json
+2026-05-02 18:10:00 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\chan_strategy_backtest_results.json
+2026-05-02 18:10:00 - __main__ - INFO - Generating charts in E:\Auto_test\huyhf\trading_system\backtest\charts

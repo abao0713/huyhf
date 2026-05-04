@@ -1,0 +1,22 @@
+2026-05-02 21:44:09,744 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 21:44:09,744 - __main__ - INFO - Continuous trading config: investment_ratio=0.10, leverage=50x, long_stop=1.20, short_stop=0.80
+2026-05-02 21:44:09,750 - trading_system.data.backtest_data - INFO - 成功加载 289 条K线数据
+2026-05-02 21:44:09,754 - trading_system.strategies.backtest_engine - INFO - 成功加载 289 条5mK线数据
+2026-05-02 21:44:09,756 - trading_system.data.backtest_data - INFO - 成功加载 2 条K线数据
+2026-05-02 21:44:09,759 - trading_system.strategies.backtest_engine - INFO - 成功加载 2 条日线K线数据
+2026-05-02 21:44:09,759 - __main__ - INFO - Loaded data: 5m=289 rows, 1d=2 rows
+2026-05-02 21:44:31,090 - trading_system.strategies.backtest_engine - INFO - 图表已保存到: backtest_plot.png
+2026-05-02 21:44:31,093 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\backtest_results.json
+2026-05-02 21:44:31,095 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\chan_strategy_backtest_results.json
+2026-05-02 21:44:31,095 - __main__ - INFO - Generating charts in E:\Auto_test\huyhf\trading_system\backtest\charts
+2026-05-02 22:04:34,525 - __main__ - INFO - Starting Chan strategy backtest: symbol=ETHUSDC, interval=5m
+2026-05-02 22:04:34,525 - __main__ - INFO - Continuous trading config: investment_ratio=0.10, leverage=50x, long_stop=1.20, short_stop=0.80
+2026-05-02 22:04:34,530 - trading_system.data.backtest_data - INFO - 成功加载 289 条K线数据
+2026-05-02 22:04:34,534 - trading_system.strategies.backtest_engine - INFO - 成功加载 289 条5mK线数据
+2026-05-02 22:04:34,536 - trading_system.data.backtest_data - INFO - 成功加载 2 条K线数据
+2026-05-02 22:04:34,539 - trading_system.strategies.backtest_engine - INFO - 成功加载 2 条日线K线数据
+2026-05-02 22:04:34,540 - __main__ - INFO - Loaded data: 5m=289 rows, 1d=2 rows
+2026-05-02 22:04:55,046 - trading_system.strategies.backtest_engine - INFO - 图表已保存到: backtest_plot.png
+2026-05-02 22:04:55,049 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\backtest_results.json
+2026-05-02 22:04:55,051 - trading_system.strategies.backtest_engine - INFO - 回测结果已保存到: E:\Auto_test\huyhf\trading_system\data\binance_history\chan_strategy_backtest_results.json
+2026-05-02 22:04:55,051 - __main__ - INFO - Generating charts in E:\Auto_test\huyhf\trading_system\backtest\charts

@@ -1,16 +1,11 @@
 import log_config
-import json
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from trading_system.core.database import init_db, SessionLocal
-from trading_system.api.routers import router
-from trading_system.api.ws import websocket_endpoint
 from log_config import logger
 import time
 
 app = FastAPI(title="Trading API", description="交易系统API", version="1.0.0")
-
-app.include_router(router, prefix="/api/v1", tags=["trading"])
 
 
 @app.middleware("http")
@@ -78,8 +73,3 @@ def health_check():
         logger.error(f"Health check: Database connection failed - {str(e)}")
         raise HTTPException(status_code=503, detail={"status": "unhealthy", "database": "disconnected", "error": str(e)})
 
-
-@app.websocket("/ws/v5/business")
-async def websocket_business(websocket: WebSocket):
-    """WebSocket业务端点，用于订阅行情数据"""
-    await websocket_endpoint(websocket)

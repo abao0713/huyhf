@@ -1,0 +1,1493 @@
+"""
+回测引擎模块
+提供完整的现货交易回测功能，支持缠论策略
+"""
+
+import json
+import logging
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from typing_extensions import  Literal
+
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+
+from trading_system.data.backtest_data import BacktestDataManager
+from trading_system.strategies.chan_strategy import ChanStrategy
+from trading_system.utils.chan_plotter import ChanPlotter
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('backtest_engine.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BacktestConfig:
+    """回测配置"""
+    initial_balance: float = 10000.0
+    commission: float = 0.001
+    slippage: float = 0.0005
+    data_dir: str = "trading_system/data/binance_history"
+    max_position_ratio: float = 1.0
+    stop_loss_pct: float = 0.1
+    take_profit_pct: float = 0.2
+    plot_enabled: bool = True
+    save_results: bool = True
+    progress_bar: bool = True
+
+    # 连续循环交易配置参数
+    investment_ratio: float = 0.10  # 每次投入总金额的比例，默认10%
+    leverage: int = 50  # 杠杆倍数，默认50倍
+    long_stop_loss_multiplier: float = 1.20  # 多单止损 = 爆仓价格 * 此值，默认120%
+    short_stop_loss_multiplier: float = 0.80  # 空单止损 = 爆仓价格 * 此值，默认80%
+
+    # ATR止损配置（新增 - 第三轮优化）
+    use_atr_stop_loss: bool = True  # 是否启用ATR止损
+    atr_period: int = 14  # ATR计算周期
+    atr_multiplier: float = 3.0  # ATR倍数（止损距离 = ATR * multiplier）【从2.5优化至3.0，更宽松】
+
+    # 动态追踪止损配置（新增 - 第三轮优化）
+    use_trailing_stop: bool = True  # 是否启用追踪止损
+    trailing_stop_activation: float = 0.04  # 激活追踪止损的盈利比例(4%)【从3%优化至4%】
+    trailing_stop_distance: float = 0.025  # 追踪止损距离(2.5%)【从2%优化至2.5%】
+    trailing_stop_step: float = 0.015  # 追踪止损步进(1.5%)【从1%优化至1.5%】
+
+
+@dataclass
+class TradeRecord:
+    """交易记录数据结构"""
+    timestamp: datetime
+    action: Literal["BUY", "SELL"]
+    price: float
+    amount: float
+    balance: float
+    position: float
+    equity: float
+    profit: float = 0.0
+    profit_pct: float = 0.0
+    reason: str = ""
+    stop_loss: float = 0.0
+    take_profit: float = 0.0
+
+
+@dataclass
+class ClosedTrade:
+    """已平仓交易记录"""
+    entry_time: datetime
+    exit_time: datetime
+    entry_price: float
+    exit_price: float
+    amount: float
+    profit: float
+    return_pct: float
+    holding_hours: float
+    stop_loss_hit: bool = False
+    take_profit_hit: bool = False
+
+
+class BacktestEngine:
+    """
+    现货交易回测引擎
+
+    功能特性：
+    1. 支持仓位控制（最大仓位比例）
+    2. 支持止损止盈
+    3. 增量数据处理优化
+    4. 完整的交易记录和绩效统计
+    5. 可视化图表生成
+    """
+
+    def __init__(
+        self,
+        config: Optional[BacktestConfig] = None,
+        initial_balance: float = None,
+        commission: float = None,
+        slippage: float = None,
+        data_dir: str = None,
+    ):
+        """
+        初始化回测引擎
+
+        Args:
+            config: 回测配置对象，如果提供则忽略其他参数
+            initial_balance: 初始资金，如果config未提供则使用此参数
+            commission: 手续费率，如果config未提供则使用此参数
+            slippage: 滑点，如果config未提供则使用此参数
+            data_dir: 数据目录，如果config未提供则使用此参数
+        """
+        if config is not None:
+            self.config = config
+        else:
+            self.config = BacktestConfig(
+                initial_balance=initial_balance if initial_balance is not None else BacktestConfig.initial_balance,
+                commission=commission if commission is not None else BacktestConfig.commission,
+                slippage=slippage if slippage is not None else BacktestConfig.slippage,
+                data_dir=data_dir if data_dir is not None else BacktestConfig.data_dir,
+            )
+        self.data_dir = Path(self.config.data_dir)
+        self.data_manager = BacktestDataManager(str(self.data_dir))
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        """
+        重置回测状态
+        在每次回测开始前调用
+        """
+        self.balance = self.config.initial_balance
+        self.position = 0.0
+        self.avg_price = 0.0
+        self.trades: List[TradeRecord] = []
+        self.equity_curve: List[float] = []
+        self.timestamps: List[datetime] = []
+        self.max_equity = self.config.initial_balance
+        self.max_drawdown = 0.0
+        self.current_drawdown = 0.0
+        self.consecutive_losses = 0
+        self.max_consecutive_losses = 0
+
+        # ATR和追踪止损状态（新增）
+        self.current_atr: float = 0.0  # 当前ATR值
+        self.trailing_stop_price: float = 0.0  # 当前追踪止损价
+        self.initial_stop_loss_price: float = 0.0  # 初始止损价（ATR止损）
+        self.highest_price_since_entry: float = 0.0  # 入场后最高价（多单用）
+        self.lowest_price_since_entry: float = float('inf')  # 入场后最低价（空单用）
+        self.is_trailing_stop_active: bool = False  # 追踪止损是否激活
+
+    def load_data(
+            self,
+            symbol: str = "BTCUSDT",
+            interval: str = "5m",
+            start_date: Optional[str] = None,
+            end_date: Optional[str] = None
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        加载历史K线数据
+
+        Args:
+            symbol: 交易对
+            interval: K线周期
+            start_date: 开始日期，格式YYYY-MM-DD
+            end_date: 结束日期，格式YYYY-MM-DD
+
+        Returns:
+            包含K线数据的字典
+        """
+        data: Dict[str, pd.DataFrame] = {}
+
+        # 加载指定周期的K线
+        df_interval = self._load_and_filter_data(
+            f"{symbol}_{interval}.csv",
+            start_date,
+            end_date
+        )
+        if not df_interval.empty:
+            data[interval] = self._prepare_dataframe(df_interval)
+            logger.info("成功加载 %s 条%sK线数据", len(data[interval]), interval)
+        else:
+            logger.error("加载%s数据失败，请检查数据文件是否存在", interval)
+            return data
+
+        # 加载日线数据用于辅助分析
+        df_1d = self._load_and_filter_data(f"{symbol}_1d.csv", start_date, end_date)
+        if not df_1d.empty:
+            data["1d"] = self._prepare_dataframe(df_1d)
+            logger.info("成功加载 %s 条日线K线数据", len(data["1d"]))
+        else:
+            logger.warning("日线数据加载失败，策略可能无法正常计算日线级别指标")
+
+        return data
+
+    def _load_and_filter_data(
+            self,
+            filename: str,
+            start_date: Optional[str],
+            end_date: Optional[str]
+    ) -> pd.DataFrame:
+        """
+        加载并过滤数据
+
+        Args:
+            filename: 数据文件名
+            start_date: 开始日期
+            end_date: 结束日期
+
+        Returns:
+            过滤后的DataFrame
+        """
+        try:
+            df = self.data_manager.load_klines_from_csv(filename)
+            if df.empty:
+                return df
+
+            if "open_time" in df.columns:
+                df["open_time"] = pd.to_datetime(df["open_time"])
+
+                if start_date:
+                    df = df[df["open_time"] >= pd.Timestamp(start_date)]
+                if end_date:
+                    df = df[df["open_time"] <= pd.Timestamp(end_date)]
+
+            return df
+        except Exception as e:
+            logger.error("加载数据文件 %s 失败: %s", filename, e)
+            return pd.DataFrame()
+
+    def run_backtest(
+            self,
+            data: Dict[str, pd.DataFrame],
+            strategy: ChanStrategy,
+            interval: str = "5m",
+            plot_filename: str = "backtest_plot.png"
+    ) -> Dict[str, Any]:
+        """
+        执行回测主流程
+
+        Args:
+            data: K线数据
+            strategy: 交易策略
+            interval: K线周期
+            plot_filename: 图表保存路径
+
+        Returns:
+            回测结果字典
+        """
+        try:
+            # 验证数据
+            if interval not in data:
+                logger.error("缺少%s周期K线数据", interval)
+                return {}
+
+            df_interval = self._prepare_dataframe(data[interval])
+            if df_interval.empty:
+                logger.error("K线数据为空")
+                return {}
+
+            df_1d = data.get("1d", pd.DataFrame())
+            if not df_1d.empty:
+                df_1d = self._prepare_dataframe(df_1d)
+
+            # 重置状态
+            self._reset_state()
+
+            # 配置策略
+            strategy.use_binance_client = False
+
+            # 准备日线时间索引
+            daily_indices = self._prepare_daily_indices(df_interval, df_1d)
+
+            # 执行回测循环
+            self._run_backtest_loop(df_interval, df_1d, daily_indices, strategy)
+
+            # 计算绩效指标
+            results = self._calculate_performance()
+
+            # 生成图表
+            if self.config.plot_enabled:
+                # 使用处理后的数据绘制图表（因为分型索引是在处理后数据上计算的）
+                kline_data_for_plot = strategy.df_processed if hasattr(strategy, 'df_processed') and not strategy.df_processed.empty else df_interval
+                self._plot_results(kline_data_for_plot, strategy, plot_filename)
+
+            # 保存结果
+            if self.config.save_results and results:
+                self.save_results(results)
+
+            return results
+
+        except Exception as e:
+            logger.error("回测执行失败: %s", e, exc_info=True)
+            return {}
+
+    def _prepare_daily_indices(
+            self,
+            df_interval: pd.DataFrame,
+            df_1d: pd.DataFrame
+    ) -> np.ndarray:
+        """
+        准备日线时间索引
+
+        Args:
+            df_interval: 周期K线数据
+            df_1d: 日线数据
+
+        Returns:
+            日线结束索引数组
+        """
+        if df_1d.empty:
+            return np.zeros(len(df_interval), dtype=int)
+
+        # 将时间转换为日期
+        daily_days = df_1d["open_time"].dt.normalize().to_numpy(dtype="datetime64[D]")
+        bar_days = df_interval["open_time"].dt.normalize().to_numpy(dtype="datetime64[D]")
+
+        # 为每个bar找到对应的日线结束位置
+        daily_end_indices = np.searchsorted(daily_days, bar_days, side="right")
+        return np.clip(daily_end_indices, 0, len(df_1d) - 1)
+
+    def _run_backtest_loop(
+            self,
+            df_interval: pd.DataFrame,
+            df_1d: pd.DataFrame,
+            daily_indices: np.ndarray,
+            strategy: ChanStrategy
+    ) -> None:
+        """
+        执行回测循环
+
+        Args:
+            df_interval: 周期K线数据
+            df_1d: 日线数据
+            daily_indices: 日线索引
+            strategy: 交易策略
+        """
+        # 创建进度条
+        iterator = enumerate(zip(df_interval.itertuples(), daily_indices))
+        if self.config.progress_bar:
+            iterator = tqdm(iterator, total=len(df_interval), desc="回测进度")
+
+        # 主循环
+        for i, (kline, daily_end_idx) in iterator:
+            # 更新策略数据
+            if not df_1d.empty and daily_end_idx > 0:
+                strategy.df_30m = df_interval.iloc[:i + 1]
+                strategy.df_daily = df_1d.iloc[:daily_end_idx]
+
+            # 处理数据
+            try:
+                strategy._process_data()
+            except Exception as e:
+                logger.warning("第%d根K线数据处理失败: %s", i, e)
+                continue
+
+            # 生成信号
+            signal = strategy.generate_signal()
+
+            # 计算ATR（用于动态止损）
+            if self.config.use_atr_stop_loss or self.config.use_trailing_stop:
+                self._calculate_current_atr(strategy)
+
+            # 检查止损止盈
+            if self.position > 0:
+                self._check_advanced_stop_loss(kline)  # 使用新的高级止损方法
+
+            # 执行交易
+            if signal and signal.get("action") != "HOLD":
+                self._execute_trade(signal, kline)
+
+            # 记录权益
+            self._record_equity(kline)
+
+            # 定期清理内存
+            if i % 1000 == 0:
+                import gc
+                gc.collect()
+
+    def _calculate_current_atr(self, strategy) -> None:
+        """
+        计算当前ATR（Average True Range）值
+
+        ATR用于衡量市场波动率，动态调整止损距离
+
+        Args:
+            strategy: 策略对象（包含K线数据）
+        """
+        try:
+            if not hasattr(strategy, 'df_30m') or strategy.df_30m.empty:
+                return
+
+            df = strategy.df_30m
+            period = self.config.atr_period
+
+            if len(df) < period + 1:
+                return
+
+            # 计算True Range (TR)
+            high = df['high'].astype(float)
+            low = df['low'].astype(float)
+            close = df['close'].astype(float)
+
+            prev_close = close.shift(1)
+
+            tr1 = high - low
+            tr2 = abs(high - prev_close)
+            tr3 = abs(low - prev_close)
+
+            true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+            # 计算ATR（使用EMA平滑）
+            atr = true_range.ewm(span=period, adjust=False).mean()
+
+            self.current_atr = atr.iloc[-1]
+
+        except Exception as e:
+            logger.warning(f"[BacktestEngine] ATR计算失败: {e}")
+            self.current_atr = 0.0
+
+    def _calculate_kelly_position_size(
+        self,
+        base_investment_ratio: float,
+        signal: Dict[str, Any]
+    ) -> float:
+        """
+        使用凯利公式计算最优仓位大小（方案5：动态仓位管理）
+
+        凯利公式：f = (bp - q) / b
+        其中：
+        - b = 盈亏比（平均盈利/平均亏损）
+        - p = 胜率
+        - q = 败率 (1-p)
+
+        同时考虑连续亏损保护机制。
+
+        Args:
+            base_investment_ratio: 基础投入比例（如0.1表示10%）
+            signal: 信号字典（包含盈亏比等信息）
+
+        Returns:
+            float: 调整后的仓位比例（限制在5%-25%范围内）
+        """
+        try:
+            # ===== 连续亏损保护 =====
+            if self.consecutive_losses >= 3:
+                adjusted_ratio = base_investment_ratio * 0.5
+                logger.warning(
+                    f"[BacktestEngine] ⚠️ 连续亏损{self.consecutive_losses}次，"
+                    f"减半仓位至{adjusted_ratio*100:.1f}%"
+                )
+                return max(0.05, adjusted_ratio)
+
+            # ===== 凯利公式计算 =====
+            # 使用历史交易统计（简化版）
+            if len(self.trades) < 10:
+                # 样本不足时使用基础比例的80%
+                return base_investment_ratio * 0.8
+
+            # 计算历史胜率和平均盈亏
+            wins = [t for t in self.trades if t.profit > 0]
+            losses = [t for t in self.trades if t.profit < 0]
+
+            if not wins or not losses:
+                return base_investment_ratio * 0.7
+
+            win_rate = len(wins) / len(self.trades)
+            avg_win = abs(sum(t.profit for t in wins) / len(wins))
+            avg_loss = abs(sum(t.profit for t in losses) / len(losses))
+
+            if avg_loss == 0:
+                return base_investment_ratio
+
+            # 盈亏比
+            b = avg_win / avg_loss
+            p = win_rate
+            q = 1 - p
+
+            # 凯利公式
+            kelly = (b * p - q) / b if b > 0 else 0
+
+            # 限制凯利结果在安全范围内（半凯利原则，更保守）
+            kelly = max(0.05, min(kelly * 0.5, 0.25))  # 5%-25%
+
+            logger.info(
+                f"[BacktestEngine] 📊 凯利公式: "
+                f"胜率={p*100:.1f}%, 盈亏比={b:.2f}, "
+                f"凯利值={kelly*100:.1f}%"
+            )
+
+            return kelly
+
+        except Exception as e:
+            logger.warning(f"[BacktestEngine] 凯利公式计算失败: {e}")
+            return base_investment_ratio * 0.7
+
+    def _initialize_stop_loss(self, entry_price: float, position_type: str) -> None:
+        """
+        初始化止损位（开仓时调用）
+
+        根据配置决定使用固定止损、ATR止损或混合模式
+
+        Args:
+            entry_price: 开仓价格
+            position_type: 持仓方向 ("long" 或 "short")
+        """
+        if self.config.use_atr_stop_loss and self.current_atr > 0:
+            # 使用ATR止损
+            atr_stop_distance = self.current_atr * self.config.atr_multiplier
+
+            if position_type == "long":
+                self.initial_stop_loss_price = entry_price - atr_stop_distance
+                self.trailing_stop_price = self.initial_stop_loss_price
+                self.highest_price_since_entry = entry_price
+            else:  # short
+                self.initial_stop_loss_price = entry_price + atr_stop_distance
+                self.trailing_stop_price = self.initial_stop_loss_price
+                self.lowest_price_since_entry = entry_price
+
+            logger.info(
+                f"[BacktestEngine] 初始化ATR止损: "
+                f"入场价={entry_price:.2f}, "
+                f"ATR={self.current_atr:.2f}, "
+                f"止损距离={atr_stop_distance:.2f}, "
+                f"初始止损价={self.initial_stop_loss_price:.2f}"
+            )
+        else:
+            # 使用传统固定百分比止损
+            if position_type == "long":
+                stop_loss_pct = self.config.stop_loss_pct
+                self.initial_stop_loss_price = entry_price * (1 - stop_loss_pct)
+                self.trailing_stop_price = self.initial_stop_loss_price
+                self.highest_price_since_entry = entry_price
+            else:  # short
+                stop_loss_pct = self.config.stop_loss_pct
+                self.initial_stop_loss_price = entry_price * (1 + stop_loss_pct)
+                self.trailing_stop_price = self.initial_stop_loss_price
+                self.lowest_price_since_entry = entry_price
+
+        self.is_trailing_stop_active = False  # 重置追踪止损状态
+
+    def _update_trailing_stop(self, current_price: float) -> None:
+        """
+        更新追踪止损位
+
+        当盈利超过激活阈值后，开始追踪止损
+        追踪止损只向有利方向移动，不会回退
+
+        Args:
+            current_price: 当前价格
+        """
+        if not self.config.use_trailing_stop or self.position == 0:
+            return
+
+        profit_pct = (current_price - self.avg_price) / self.avg_price
+
+        # 检查是否应该激活追踪止损
+        if not self.is_trailing_stop_active:
+            if abs(profit_pct) >= self.config.trailing_stop_activation:
+                self.is_trailing_stop_active = True
+                logger.info(
+                    f"[BacktestEngine] ✨ 激活追踪止损! "
+                    f"盈利={profit_pct*100:.2f}%, "
+                    f"当前价={current_price:.2f}"
+                )
+
+        # 更新追踪止损位
+        if self.is_trailing_stop_active:
+            if self.position > 0:  # 多单
+                # 更新最高价
+                if current_price > self.highest_price_since_entry:
+                    self.highest_price_since_entry = current_price
+
+                    # 计算新的追踪止损位（只在价格上涨时上移）
+                    new_trailing_stop = self.highest_price_since_entry * (
+                        1 - self.config.trailing_stop_distance
+                    )
+
+                    # 只向上移动止损（锁定更多利润）
+                    if new_trailing_stop > self.trailing_stop_price:
+                        old_stop = self.trailing_stop_price
+                        self.trailing_stop_price = new_trailing_stop
+
+                        logger.debug(
+                            f"[BacktestEngine] 追踪止损上移: "
+                            f"{old_stop:.2f} → {new_trailing_stop:.2f} "
+                            f"(最高价={current_price:.2f})"
+                        )
+
+            elif self.position < 0:  # 空单
+                # 更新最低价
+                if current_price < self.lowest_price_since_entry:
+                    self.lowest_price_since_entry = current_price
+
+                    # 计算新的追踪止损位（只在价格下跌时下移）
+                    new_trailing_stop = self.lowest_price_since_entry * (
+                        1 + self.config.trailing_stop_distance
+                    )
+
+                    # 只向下移动止损
+                    if new_trailing_stop < self.trailing_stop_price:
+                        old_stop = self.trailing_stop_price
+                        self.trailing_stop_price = new_trailing_stop
+
+                        logger.debug(
+                            f"[BacktestEngine] 追踪止损下移: "
+                            f"{old_stop:.2f} → {new_trailing_stop:.2f} "
+                            f"(最低价={current_price:.2f})"
+                        )
+
+    def _check_advanced_stop_loss(self, kline) -> None:
+        """
+        高级止损检查（集成ATR止损 + 动态追踪止损）
+
+        止损逻辑：
+        1. 初始阶段：使用ATR止损或固定止损
+        2. 盈利达标：切换到动态追踪止损
+        3. 追随止损：锁定利润，减少回撤
+
+        Args:
+            kline: 当前K线数据
+        """
+        if self.position <= 0 or self.avg_price <= 0:
+            return
+
+        # 获取当前价格
+        if hasattr(kline, 'close'):
+            current_price = float(kline.close)
+            open_time = kline.open_time
+        else:
+            current_price = float(kline["close"])
+            open_time = kline["open_time"]
+
+        # 更新追踪止损
+        self._update_trailing_stop(current_price)
+
+        # 确定当前有效的止损价
+        effective_stop_loss = self.trailing_stop_price
+
+        # 检查是否触发止损
+        stop_loss_triggered = False
+        stop_loss_reason = ""
+
+        if self.position > 0:  # 多单持仓
+            if current_price <= effective_stop_loss:
+                stop_loss_triggered = True
+                stop_loss_reason = "ATR/追踪止损" if self.is_trailing_stop_active else "初始止损"
+
+                logger.info(
+                    f"[BacktestEngine] 🛑 多单触发{stop_loss_reason}: "
+                    f"当前价={current_price:.2f} <= 止损价={effective_stop_loss:.2f}"
+                )
+
+        elif self.position < 0:  # 空单持仓
+            if current_price >= effective_stop_loss:
+                stop_loss_triggered = True
+                stop_loss_reason = "ATR/追踪止损" if self.is_trailing_stop_active else "初始止损"
+
+                logger.info(
+                    f"[BacktestEngine] 🛑 空单触发{stop_loss_reason}: "
+                    f"当前价={current_price:.2f} >= 止损价={effective_stop_loss:.2f}"
+                )
+
+        # 执行止损平仓
+        if stop_loss_triggered:
+            self._sell_with_reason(
+                open_time,
+                current_price,
+                f"{stop_loss_reason} (高级止损)"
+            )
+
+    def _check_stop_loss_take_profit(self, kline) -> None:
+        """
+        检查止损止盈条件（保留原方法作为备用）
+
+        Args:
+            kline: 当前K线数据（可以是namedtuple或pd.Series）
+        """
+        if self.position <= 0 or self.avg_price <= 0:
+            return
+
+        # 支持namedtuple和Series两种格式
+        if hasattr(kline, 'close'):
+            current_price = float(kline.close)
+            open_time = kline.open_time
+        else:
+            current_price = float(kline["close"])
+            open_time = kline["open_time"]
+
+        # 计算盈亏百分比
+        profit_pct = (current_price - self.avg_price) / self.avg_price
+
+        # 检查止损
+        if profit_pct <= -self.config.stop_loss_pct:
+            logger.info("触发止损: %.2f%%", profit_pct * 100)
+            self._sell_with_reason(
+                open_time,
+                current_price,
+                "STOP_LOSS"
+            )
+
+        # 检查止盈
+        elif profit_pct >= self.config.take_profit_pct:
+            logger.info("触发止盈: %.2f%%", profit_pct * 100)
+            self._sell_with_reason(
+                open_time,
+                current_price,
+                "TAKE_PROFIT"
+            )
+
+    def _execute_trade(self, signal: Dict[str, Any], kline) -> None:
+        """
+        执行交易（支持连续循环交易）
+
+        交易逻辑：
+        - BUY信号（底背驰）：判断是否有空单持仓
+          * 有空单 -> 平仓空单 + 开多单
+          * 无空单 -> 直接开多单
+        - SELL信号（顶背驰）：判断是否有多单持仓
+          * 有多单 -> 平仓多单 + 开空单
+          * 无多单 -> 直接开空单
+
+        配置参数（从self.config读取，可配置）：
+        - investment_ratio: 每次投入总金额的比例，默认10%
+        - leverage: 杠杆倍数，默认50倍
+        - long_stop_loss_multiplier: 多单止损 = 爆仓价格 * 此值，默认120%
+        - short_stop_loss_multiplier: 空单止损 = 爆仓价格 * 此值，默认80%
+
+        Args:
+            signal: 交易信号
+            kline: 当前K线（可以是namedtuple或pd.Series）
+        """
+        action = signal.get("action")
+        
+        # 支持namedtuple和Series两种格式
+        if hasattr(kline, 'close'):
+            market_price = float(kline.close)
+            open_time = kline.open_time
+        else:
+            market_price = float(kline["close"])
+            open_time = kline["open_time"]
+        reason = signal.get("reason", "")
+
+        # 验证信号有效性
+        if not self._validate_signal(action, signal):
+            return
+
+        # 从配置读取参数（支持自定义配置）
+        investment_ratio = self.config.investment_ratio  # 默认10%
+        leverage = self.config.leverage  # 默认50倍
+
+        if action == "BUY":
+            # ===== 方案1：禁止逆势加仓（消除马丁格尔陷阱）=====
+            if self.position > 0:
+                logger.info(
+                    f"[BacktestEngine] 🚫 已持有多单({self.position:.4f}个)，"
+                    f"忽略新BUY信号 @ ${market_price:.2f} (防止逆势加仓)"
+                )
+                return
+
+            # 底背驰信号：先检查是否有空单持仓
+            
+            if self.position < 0:
+                # 有空单 -> 先平仓空单
+                short_qty = abs(self.position)
+                exec_price = market_price * (1 + self.config.slippage)
+                close_reason = f"{reason} 平空"
+                
+                logger.info(f"[BacktestEngine] 检测到空单持仓 {short_qty:.4f}，执行平仓")
+                self._sell_with_reason(
+                    open_time,
+                    exec_price,
+                    close_reason
+                )
+                logger.info(f"[BacktestEngine] 已平仓空单: {short_qty:.4f} @ {exec_price:.2f}")
+
+            # 根据共振级别动态调整仓位比例（方案5：使用凯利公式优化）
+            base_amount = self.balance * investment_ratio
+            resonance_ratio = signal.get("position_size_ratio", 0.7)
+            kelly_ratio = self._calculate_kelly_position_size(investment_ratio, signal)
+            position_size_ratio = resonance_ratio * kelly_ratio  # 共振×凯利
+            actual_amount = base_amount * position_size_ratio
+
+            if actual_amount <= 0:
+                logger.warning(f"[BacktestEngine] 余额不足或仓位比例为0，无法开多单")
+                return
+
+            logger.info(
+                f"[BacktestEngine] 仓位调整: "
+                f"基础金额${base_amount:.2f} × "
+                f"仓位比例{position_size_ratio*100:.0f}% ({signal.get('resonance_level', 'unknown')}) = "
+                f"实际投入${actual_amount:.2f}"
+            )
+
+            # 计算数量（考虑杠杆）
+            exec_price = market_price * (1 + self.config.slippage)
+            quantity = (actual_amount * leverage) / exec_price
+
+            # 计算止损价格（多单止损 = 爆仓价格 * long_stop_loss_multiplier）
+            # 爆仓价格公式：对于多头合约，爆仓价 ≈ 开仓价 * (1 - 1/杠杆)
+            liquidation_price = exec_price * (1 - 1/leverage)
+            stop_loss_price = liquidation_price * self.config.long_stop_loss_multiplier
+
+            # 开多单
+            self._buy_with_reason(
+                open_time,
+                exec_price,
+                actual_amount,
+                reason
+            )
+            logger.info(
+                f"[BacktestEngine] 开多单成功: "
+                f"实际投入${actual_amount:.2f} (理论${base_amount:.2f}), "
+                f"仓位比例{position_size_ratio*100:.0f}%, "
+                f"共振级别:{signal.get('resonance_level', 'unknown')}, "
+                f"杠杆{leverage}x, "
+                f"数量{quantity:.4f}, "
+                f"开仓价{exec_price:.2f}, "
+                f"爆仓价{liquidation_price:.2f}, "
+                f"止损价{stop_loss_price:.2f} (爆仓价×{self.config.long_stop_loss_multiplier:.0f}%)"
+            )
+
+            # 初始化高级止损（ATR + 追踪止损）
+            self._initialize_stop_loss(exec_price, "long")
+
+        elif action == "SELL":
+            # ===== 方案1：禁止逆势加仓（消除马丁格尔陷阱）=====
+            if self.position < 0:
+                logger.info(
+                    f"[BacktestEngine] 🚫 已持有空单({abs(self.position):.4f}个)，"
+                    f"忽略新SELL信号 @ ${market_price:.2f} (防止逆势加仓)"
+                )
+                return
+
+            # 顶背驰信号：先检查是否有多单持仓
+            
+            if self.position > 0:
+                # 有多单 -> 先平仓多单
+                long_qty = self.position
+                exec_price = market_price * (1 - self.config.slippage)
+                close_reason = f"{reason} 平多"
+                
+                logger.info(f"[BacktestEngine] 检测到多单持仓 {long_qty:.4f}，执行平仓")
+                self._sell_with_reason(
+                    open_time,
+                    exec_price,
+                    close_reason
+                )
+                logger.info(f"[BacktestEngine] 已平仓多单: {long_qty:.4f} @ {exec_price:.2f}")
+
+            # 根据共振级别动态调整仓位比例（方案5：使用凯利公式优化）
+            base_amount = self.balance * investment_ratio
+            resonance_ratio = signal.get("position_size_ratio", 0.7)
+            kelly_ratio = self._calculate_kelly_position_size(investment_ratio, signal)
+            position_size_ratio = resonance_ratio * kelly_ratio  # 共振×凯利
+            actual_amount = base_amount * position_size_ratio
+
+            if actual_amount <= 0:
+                logger.warning(f"[BacktestEngine] 余额不足或仓位比例为0，无法开空单")
+                return
+
+            logger.info(
+                f"[BacktestEngine] 仓位调整: "
+                f"基础金额${base_amount:.2f} × "
+                f"仓位比例{position_size_ratio*100:.0f}% ({signal.get('resonance_level', 'unknown')}) = "
+                f"实际投入${actual_amount:.2f}"
+            )
+
+            # 计算数量（考虑杠杆）
+            exec_price = market_price * (1 - self.config.slippage)
+            quantity = (actual_amount * leverage) / exec_price
+
+            # 计算止损价格（空单止损 = 爆仓价格 * short_stop_loss_multiplier）
+            # 爆仓价格公式：对于空头合约，爆仓价 ≈ 开仓价 * (1 + 1/杠杆)
+            liquidation_price = exec_price * (1 + 1/leverage)
+            stop_loss_price = liquidation_price * self.config.short_stop_loss_multiplier
+
+            # 开空单（模拟：记录为负持仓）
+            self._sell_with_reason(
+                open_time,
+                exec_price,
+                reason
+            )
+            logger.info(
+                f"[BacktestEngine] 开空单成功: "
+                f"实际投入${actual_amount:.2f} (理论${base_amount:.2f}), "
+                f"仓位比例{position_size_ratio*100:.0f}%, "
+                f"共振级别:{signal.get('resonance_level', 'unknown')}, "
+                f"杠杆{leverage}x, "
+                f"数量{quantity:.4f}, "
+                f"开仓价{exec_price:.2f}, "
+                f"爆仓价{liquidation_price:.2f}, "
+                f"止损价{stop_loss_price:.2f} (爆仓价×{self.config.short_stop_loss_multiplier:.0f}%)"
+            )
+
+            # 初始化高级止损（ATR + 追踪止损）
+            self._initialize_stop_loss(exec_price, "short")
+
+    def _validate_signal(self, action: str, signal: Dict[str, Any]) -> bool:
+        """
+        验证交易信号有效性（支持连续循环交易）
+
+        在连续循环交易模式下：
+        - BUY信号：允许在有空单时执行（会先平空再开多）
+        - SELL信号：允许在有多单时执行（会先平多再开空）
+        - 不再阻止反向信号的执行
+
+        Args:
+            action: 交易动作
+            signal: 交易信号
+
+        Returns:
+            信号是否有效
+        """
+        if action not in ["BUY", "SELL"]:
+            return False
+
+        # 连续循环交易模式下，不再阻止以下情况：
+        # - BUY信号 + 有多单持仓：可以继续加仓或根据策略逻辑处理
+        # - SELL信号 + 有空单持仓：可以继续加仓或根据策略逻辑处理
+        # 这些判断由_execute_trade方法内部处理
+        
+        # 可以添加其他验证逻辑
+        return True
+
+    def _buy_with_reason(
+            self,
+            timestamp: datetime,
+            price: float,
+            amount: float,
+            reason: str
+    ) -> None:
+        """
+        带原因的买入
+
+        Args:
+            timestamp: 时间戳
+            price: 价格
+            amount: 金额
+            reason: 原因
+        """
+        if amount <= 0 or price <= 0:
+            return
+
+        # 计算可买入数量
+        buy_amount = amount / price * (1 - self.config.commission)
+        if buy_amount <= 0:
+            return
+
+        # 记录交易
+        trade = TradeRecord(
+            timestamp=timestamp,
+            action="BUY",
+            price=price,
+            amount=buy_amount,
+            balance=self.balance - amount,
+            position=self.position + buy_amount,
+            equity=self.balance - amount + (self.position + buy_amount) * price,
+            reason=reason
+        )
+
+        # 更新状态
+        if self.position == 0:
+            self.avg_price = price
+        else:
+            total_cost = self.position * self.avg_price + buy_amount * price
+            self.avg_price = total_cost / (self.position + buy_amount)
+
+        self.position += buy_amount
+        self.balance -= amount
+        self.trades.append(trade)
+
+        logger.info("买入 %.4f @ %.2f, 原因: %s", buy_amount, price, reason)
+
+    def _sell_with_reason(self, timestamp: datetime, price: float, reason: str) -> None:
+        """
+        带原因的卖出
+
+        Args:
+            timestamp: 时间戳
+            price: 价格
+            reason: 原因
+        """
+        if self.position <= 0 or price <= 0:
+            return
+
+        # 计算卖出收益
+        amount = self.position
+        proceeds = amount * price * (1 - self.config.commission)
+
+        # 计算利润
+        cost = self.position * self.avg_price
+        profit = proceeds - cost
+        profit_pct = (profit / cost * 100) if cost > 0 else 0.0
+
+        # 更新连续亏损记录
+        if profit < 0:
+            self.consecutive_losses += 1
+            self.max_consecutive_losses = max(
+                self.max_consecutive_losses,
+                self.consecutive_losses
+            )
+        else:
+            self.consecutive_losses = 0
+
+        # 记录交易
+        trade = TradeRecord(
+            timestamp=timestamp,
+            action="SELL",
+            price=price,
+            amount=amount,
+            balance=self.balance + proceeds,
+            position=0.0,
+            equity=self.balance + proceeds,
+            profit=profit,
+            profit_pct=profit_pct,
+            reason=reason
+        )
+
+        # 更新状态
+        self.balance += proceeds
+        self.position = 0.0
+        self.avg_price = 0.0
+        self.trades.append(trade)
+
+        logger.info(
+            "卖出 %.4f @ %.2f, 利润: %.2f (%.2f%%), 原因: %s",
+            amount, price, profit, profit_pct, reason
+        )
+
+    def _record_equity(self, kline) -> None:
+        """
+        记录权益
+
+        Args:
+            kline: 当前K线（可以是namedtuple或pd.Series）
+        """
+        # 支持namedtuple和Series两种格式
+        if hasattr(kline, 'close'):
+            current_price = float(kline.close)
+        else:
+            current_price = float(kline["close"])
+        position_value = self.position * current_price if self.position > 0 else 0.0
+        equity = self.balance + position_value
+
+        # 记录时间戳和权益
+        if hasattr(kline, 'open_time'):
+            self.timestamps.append(kline.open_time)
+        else:
+            self.timestamps.append(pd.Timestamp.now())
+
+        self.equity_curve.append(equity)
+
+        # 更新最大回撤
+        self.max_equity = max(self.max_equity, equity)
+        if self.max_equity > 0:
+            drawdown = (self.max_equity - equity) / self.max_equity * 100
+            self.current_drawdown = drawdown
+            self.max_drawdown = max(self.max_drawdown, drawdown)
+
+    def _prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        数据预处理
+
+        Args:
+            df: 原始数据
+
+        Returns:
+            处理后的数据
+        """
+        if df.empty:
+            return df
+
+        prepared = df.copy()
+
+        # 转换时间列
+        time_columns = ['open_time', 'close_time', 'timestamp']
+        for col in time_columns:
+            if col in prepared.columns:
+                prepared[col] = pd.to_datetime(prepared[col], errors='coerce')
+
+        # 转换数值列
+        numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+        for col in numeric_columns:
+            if col in prepared.columns:
+                prepared[col] = pd.to_numeric(prepared[col], errors='coerce')
+
+        # 删除全为NaN的行
+        prepared = prepared.dropna(subset=['open', 'high', 'low', 'close'], how='all')
+
+        # 按时间排序
+        if 'open_time' in prepared.columns:
+            prepared = prepared.sort_values('open_time').reset_index(drop=True)
+
+        return prepared
+
+    def _calculate_performance(self) -> Dict[str, Any]:
+        """
+        计算绩效指标
+
+        Returns:
+            绩效指标字典
+        """
+        if not self.equity_curve:
+            logger.warning("权益曲线为空，无法计算绩效")
+            return {}
+
+        # 基本指标
+        final_equity = float(self.equity_curve[-1])
+        net_profit = final_equity - self.config.initial_balance
+        total_return = (net_profit / self.config.initial_balance * 100) if self.config.initial_balance > 0 else 0.0
+
+        # 计算回撤
+        equity_array = np.array(self.equity_curve, dtype=float)
+        running_max = np.maximum.accumulate(equity_array)
+        drawdowns = (running_max - equity_array) / running_max * 100
+        drawdowns = np.where(np.isnan(drawdowns), 0, drawdowns)
+        max_drawdown = float(np.max(drawdowns))
+
+        # 构建已平仓交易
+        closed_trades = self._build_closed_trades()
+
+        # 计算交易统计
+        if closed_trades:
+            profits = [trade.profit for trade in closed_trades]
+            returns_pct = [trade.return_pct for trade in closed_trades]
+
+            winning_trades = [p for p in profits if p > 0]
+            losing_trades = [p for p in profits if p <= 0]
+
+            win_rate = len(winning_trades) / len(closed_trades) * 100
+            profit_factor = (
+                abs(sum(winning_trades) / sum(losing_trades))
+                if sum(losing_trades) != 0 else 0.0
+            )
+
+            avg_profit = float(np.mean(profits))
+            avg_win = float(np.mean(winning_trades)) if winning_trades else 0.0
+            avg_loss = float(np.mean(losing_trades)) if losing_trades else 0.0
+            avg_return_pct = float(np.mean(returns_pct))
+
+            holding_hours = [trade.holding_hours for trade in closed_trades]
+            avg_holding_hours = float(np.mean(holding_hours))
+
+            # 计算夏普比率
+            if len(self.equity_curve) > 1:
+                returns = np.diff(equity_array) / equity_array[:-1]
+                sharpe_ratio = self._calculate_sharpe_ratio(returns)
+            else:
+                sharpe_ratio = 0.0
+        else:
+            win_rate = 0.0
+            profit_factor = 0.0
+            avg_profit = 0.0
+            avg_win = 0.0
+            avg_loss = 0.0
+            avg_return_pct = 0.0
+            avg_holding_hours = 0.0
+            sharpe_ratio = 0.0
+
+        # 汇总结果
+        results = {
+            "initial_balance": self.config.initial_balance,
+            "final_equity": final_equity,
+            "net_profit": net_profit,
+            "total_return_pct": total_return,
+            "max_drawdown_pct": max_drawdown,
+            "current_drawdown_pct": self.current_drawdown,
+            "total_trades": len(self.trades),
+            "closed_trades": len(closed_trades),
+            "win_rate_pct": win_rate,
+            "profit_factor": profit_factor,
+            "avg_trade_profit": avg_profit,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "avg_return_pct": avg_return_pct,
+            "avg_holding_hours": avg_holding_hours,
+            "sharpe_ratio": sharpe_ratio,
+            "max_consecutive_losses": self.max_consecutive_losses,
+            "final_balance": self.balance,
+            "final_position": self.position,
+            "avg_position_price": self.avg_price,
+            "timestamps": self.timestamps,
+            "equity_curve": self.equity_curve,
+        }
+
+        # 验证结果
+        if not self._validate_results(results):
+            logger.warning("绩效指标计算可能存在问题")
+
+        return results
+
+    def _calculate_sharpe_ratio(self, returns: np.ndarray) -> float:
+        """
+        计算夏普比率
+
+        Args:
+            returns: 收益率序列
+
+        Returns:
+            夏普比率
+        """
+        if len(returns) == 0 or np.std(returns) == 0:
+            return 0.0
+
+        # 年化因子：假设每天有6.5小时交易时间，一年有252个交易日
+        # 如果数据是5分钟K线，每根K线间隔5分钟
+        hourly_returns = returns
+        annual_factor = np.sqrt(6.5 * 252)  # 假设每小时计算一次收益
+
+        sharpe = np.mean(hourly_returns) / np.std(hourly_returns) * annual_factor
+        return float(sharpe)
+
+    def _build_closed_trades(self) -> List[ClosedTrade]:
+        """
+        构建已平仓交易列表
+
+        Returns:
+            已平仓交易列表
+        """
+        closed_trades = []
+
+        # 按交易对分组
+        for i in range(0, len(self.trades) - 1, 2):
+            if i + 1 >= len(self.trades):
+                break
+
+            buy_trade = self.trades[i]
+            sell_trade = self.trades[i + 1]
+
+            if buy_trade.action != "BUY" or sell_trade.action != "SELL":
+                continue
+
+            # 计算持仓时间
+            holding_hours = (
+                    (sell_trade.timestamp - buy_trade.timestamp).total_seconds() / 3600
+            )
+
+            # 计算收益
+            entry_value = buy_trade.amount * buy_trade.price
+            exit_value = sell_trade.amount * sell_trade.price
+            profit = exit_value - entry_value
+            return_pct = (profit / entry_value * 100) if entry_value > 0 else 0.0
+
+            # 检查是否触发止损止盈
+            stop_loss_hit = "STOP_LOSS" in sell_trade.reason
+            take_profit_hit = "TAKE_PROFIT" in sell_trade.reason
+
+            closed_trade = ClosedTrade(
+                entry_time=buy_trade.timestamp,
+                exit_time=sell_trade.timestamp,
+                entry_price=buy_trade.price,
+                exit_price=sell_trade.price,
+                amount=buy_trade.amount,
+                profit=profit,
+                return_pct=return_pct,
+                holding_hours=holding_hours,
+                stop_loss_hit=stop_loss_hit,
+                take_profit_hit=take_profit_hit
+            )
+
+            closed_trades.append(closed_trade)
+
+        return closed_trades
+
+    def _validate_results(self, results: Dict[str, Any]) -> bool:
+        """
+        验证回测结果的合理性
+
+        Args:
+            results: 回测结果
+
+        Returns:
+            结果是否合理
+        """
+        for key, value in results.items():
+            if isinstance(value, float):
+                if np.isnan(value) or np.isinf(value):
+                    logger.error("结果 %s 包含无效值: %s", key, value)
+                    return False
+
+                # 检查回撤是否为负数
+                if "drawdown" in key.lower() and value < 0:
+                    logger.warning("回撤值为负数: %s = %.2f", key, value)
+
+        # 检查基本逻辑
+        if results.get("final_equity", 0) < 0:
+            logger.error("最终权益为负数: %.2f", results["final_equity"])
+            return False
+
+        if results.get("total_return_pct", 0) < -100:
+            logger.error("总收益率小于-100%%: %.2f%%", results["total_return_pct"])
+            return False
+
+        return True
+
+    def _plot_results(
+            self,
+            kline_data: pd.DataFrame,
+            strategy: ChanStrategy,
+            filename: str
+    ) -> None:
+        """
+        生成图表
+
+        Args:
+            kline_data: K线数据
+            strategy: 交易策略
+            filename: 保存文件名
+        """
+        try:
+            # 准备交易信号
+            signals = []
+            for trade in self.trades:
+                if trade.action in ["BUY", "SELL"]:
+                    signals.append({
+                        "action": trade.action,
+                        "price": trade.price,
+                        "timestamp": trade.timestamp,
+                        "reason": trade.reason
+                    })
+
+            # 创建绘图器
+            plotter = ChanPlotter(
+                kline_data=kline_data,
+                fractals=strategy.fractals if hasattr(strategy, 'fractals') else [],
+                pens=strategy.pens if hasattr(strategy, 'pens') else [],
+                segments=strategy.segments if hasattr(strategy, 'segments') else [],
+                signals=signals,
+                strategy=strategy  # 传入策略对象以支持均线绘制和共振标注
+            )
+
+            # 绘制图表
+            plotter.plot()
+            plotter.save(filename)
+            logger.info("图表已保存到: %s", filename)
+
+        except Exception as e:
+            logger.error("生成图表失败: %s", e, exc_info=True)
+
+    def save_results(self, results: Dict[str, Any], filename: str = "backtest_results.json") -> None:
+        """
+        保存回测结果
+
+        Args:
+            results: 回测结果
+            filename: 文件名
+        """
+        try:
+            # 转换时间戳
+            serializable = {}
+            for key, value in results.items():
+                if key in ["timestamps"] and isinstance(value, list):
+                    serializable[key] = [
+                        ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
+                        for ts in value
+                    ]
+                elif hasattr(value, 'isoformat'):  # 处理datetime
+                    serializable[key] = value.isoformat()
+                else:
+                    serializable[key] = value
+
+            # 保存交易记录
+            serializable["trades"] = [
+                {k: (v.isoformat() if hasattr(v, 'isoformat') else v)
+                 for k, v in asdict(trade).items()}
+                for trade in self.trades
+            ]
+
+            # 保存文件
+            file_path = self.data_dir / filename
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(serializable, f, indent=2, ensure_ascii=False, default=str)
+
+            logger.info("回测结果已保存到: %s", file_path)
+
+        except Exception as e:
+            logger.error("保存回测结果失败: %s", e)
+
+    def print_summary(self, results: Dict[str, Any]) -> None:
+        """
+        打印回测摘要
+
+        Args:
+            results: 回测结果
+        """
+        if not results:
+            print("无回测结果")
+            return
+
+        print("\n" + "=" * 60)
+        print("回测结果摘要")
+        print("=" * 60)
+
+        print(f"\n📈 收益表现:")
+        print(f"   初始资金: ${results.get('initial_balance', 0):.2f}")
+        print(f"   最终权益: ${results.get('final_equity', 0):.2f}")
+        print(f"   净利润: ${results.get('net_profit', 0):.2f}")
+        print(f"   总收益率: {results.get('total_return_pct', 0):.2f}%")
+
+        print(f"\n📉 风险指标:")
+        print(f"   最大回撤: {results.get('max_drawdown_pct', 0):.2f}%")
+        print(f"   当前回撤: {results.get('current_drawdown_pct', 0):.2f}%")
+        print(f"   夏普比率: {results.get('sharpe_ratio', 0):.2f}")
+
+        print(f"\n📊 交易统计:")
+        print(f"   总交易次数: {results.get('total_trades', 0)}")
+        print(f"   平仓交易数: {results.get('closed_trades', 0)}")
+        print(f"   胜率: {results.get('win_rate_pct', 0):.2f}%")
+        print(f"   盈亏比: {results.get('profit_factor', 0):.2f}")
+        print(f"   平均持仓时间: {results.get('avg_holding_hours', 0):.2f}小时")
+
+        print(f"\n💰 资金状态:")
+        print(f"   当前余额: ${results.get('final_balance', 0):.2f}")
+        print(f"   当前持仓: {results.get('final_position', 0):.4f}")
+        if results.get('final_position', 0) > 0:
+            print(f"   持仓均价: ${results.get('avg_position_price', 0):.2f}")
+
+        print("\n" + "=" * 60)
+
+
+def main():
+    """
+    主函数 - 回测示例
+    """
+    # 创建配置
+    config = BacktestConfig(
+        initial_balance=10000.0,
+        commission=0.001,
+        slippage=0.0005,
+        max_position_ratio=0.5,  # 每次最多使用50%资金
+        stop_loss_pct=0.05,  # 5%止损
+        take_profit_pct=0.1,  # 10%止盈
+        plot_enabled=True,
+        save_results=True,
+        progress_bar=True
+    )
+
+    # 创建回测引擎
+    engine = BacktestEngine(config)
+
+    # 加载数据
+    print("正在加载数据...")
+    data = engine.load_data(
+        symbol="BTCUSDT",
+        interval="5m",
+        start_date="2024-01-01",
+        end_date="2024-12-31"
+    )
+
+    if not data or "5m" not in data or data["5m"].empty:
+        print("数据加载失败，请检查数据文件")
+        return
+
+    # 创建策略
+    from trading_system.strategies.chan_strategy import ChanStrategy
+    strategy = ChanStrategy(use_binance_client=False)
+
+    # 运行回测
+    print("开始回测...")
+    results = engine.run_backtest(
+        data=data,
+        strategy=strategy,
+        interval="5m",
+        plot_filename="backtest_result.png"
+    )
+
+    # 打印结果
+    if results:
+        engine.print_summary(results)
+
+        # 保存详细结果
+        engine.save_results(results, "detailed_results.json")
+    else:
+        print("回测失败，无结果")
+
+
+if __name__ == "__main__":
+    main()

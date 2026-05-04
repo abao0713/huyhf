@@ -1,35 +1,63 @@
-from pydantic_settings import BaseSettings
-from typing import Optional
+import os
+from typing import Dict, Any, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
-class OKXConfig(BaseSettings):
-    # API配置
-    api_key: Optional[str] = None
-    secret_key: Optional[str] = None
-    passphrase: Optional[str] = None
-    
-    # 实盘WebSocket地址（私有频道）
-    real_ws_url: str = "wss://ws.okx.com:8443/ws/v5/private"
-    # 模拟盘WebSocket地址（私有频道）
-    sim_ws_url: str = "wss://wspap.okx.com:8443/ws/v5/private"
-    # 实盘WebSocket地址（业务频道）
-    real_business_ws_url: str = "wss://ws.okx.com:8443/ws/v5/business"
-    # 模拟盘WebSocket地址（业务频道）
-    sim_business_ws_url: str = "wss://wspap.okx.com:8443/ws/v5/business"
-    
-    # 限速配置
-    max_connections_per_second: int = 3  # 基于IP的连接限制
-    max_requests_per_hour: int = 480  # 每个连接的请求限制
-    max_orders_per_2s: int = 50  # 订单限速
-    
-    # 超时配置
-    request_timeout: int = 30  # 请求超时时间（秒）
-    reconnect_interval: int = 5  # 重连间隔（秒）
-    
-    class Config:
-        env_file = ".env"
-        env_prefix = "OKX_"
-        extra = "ignore"
+class ProxyConfig:
+    """代理配置"""
+    def __init__(self, host: str, port: int, protocol: str = "http"):
+        self.host = host
+        self.port = port
+        self.protocol = protocol
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "host": self.host,
+            "port": self.port,
+            "protocol": self.protocol
+        }
+
+    @property
+    def url(self) -> str:
+        return f"{self.protocol}://{self.host}:{self.port}"
 
 
-config = OKXConfig()
+class BinanceConfig:
+    """Binance API配置"""
+
+    def __init__(self):
+        self.api_key = os.getenv("BINANCE_API_KEY", "")
+        self.secret_key = os.getenv("BINANCE_SECRET_KEY", "")
+        self.is_simulated = os.getenv("BINANCE_IS_SIMULATED", "false").lower() == "true"
+
+        # 代理配置
+        proxy_host = os.getenv("BINANCE_PROXY_HOST", "")
+        proxy_port = int(os.getenv("BINANCE_PROXY_PORT", "0"))
+        proxy_protocol = os.getenv("BINANCE_PROXY_PROTOCOL", "http")
+        self.proxy_enabled = bool(proxy_host and proxy_port > 0)
+        self.proxy = ProxyConfig(proxy_host, proxy_port, proxy_protocol) if self.proxy_enabled else None
+
+        if self.is_simulated:
+            self.rest_base_url = "https://testnet.binancefuture.com"
+        else:
+            self.rest_base_url = "https://fapi.binance.com"
+
+        self.rest_api_path = "/fapi/v1"
+
+    @property
+    def rest_url(self) -> str:
+        return f"{self.rest_base_url}{self.rest_api_path}"
+
+    def is_configured(self) -> bool:
+        return bool(self.api_key and self.secret_key)
+
+    def get_proxy_dict(self) -> Optional[Dict[str, Any]]:
+        """获取代理配置字典"""
+        if self.proxy:
+            return self.proxy.to_dict()
+        return None
+
+
+config = BinanceConfig()
