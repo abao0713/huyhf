@@ -239,22 +239,31 @@ def run_backtest(
 
 
 def generate_report(results: Dict[str, Any]) -> None:
-    """Print a concise backtest summary."""
+    """打印简洁的回测摘要"""
     print("=" * 60)
-    print("Chan Strategy Backtest Report")
+    print("  缠论策略回测报告")
     print("=" * 60)
-    print(f"Initial Balance: ${results['initial_balance']:.2f}")
-    print(f"Final Equity:    ${results['final_equity']:.2f}")
-    print(f"Net Profit:      ${results.get('net_profit', 0.0):.2f}")
-    print(f"Total Return:    {results.get('total_return_pct', results.get('total_return', 0.0)):.2f}%")
-    print(f"Max Drawdown:    {results.get('max_drawdown_pct', results.get('max_drawdown', 0.0)):.2f}%")
-    print(f"Win Rate:        {results.get('win_rate_pct', results.get('win_rate', 0.0)):.2f}%")
-    print(f"Profit Factor:   {results['profit_factor']:.2f}")
-    print(f"Total Trades:    {results['total_trades']}")
-    print(f"Closed Trades:   {results.get('closed_trades', 0)}")
-    print(f"Avg Trade PnL:   ${results.get('avg_trade_profit', 0.0):.2f}")
-    print(f"Avg Hold Time:   {results.get('avg_holding_hours', results.get('avg_holding_time', 0.0)):.2f} hours")
-    print(f"Sharpe Ratio:    {results['sharpe_ratio']:.2f}")
+    print(f"\n收益表现:")
+    print(f"  初始资金:       ${results['initial_balance']:,.2f}")
+    print(f"  最终权益:       ${results['final_equity']:,.2f}")
+    print(f"  净利润:         ${results.get('net_profit', 0.0):,.2f}")
+    print(f"  总收益率:       {results.get('total_return_pct', results.get('total_return', 0.0)):.2f}%")
+    print(f"\n风险指标:")
+    print(f"  最大回撤:       {results.get('max_drawdown_pct', results.get('max_drawdown', 0.0)):.2f}%")
+    print(f"  夏普比率:       {results['sharpe_ratio']:.2f}")
+    print(f"\n交易统计:")
+    print(f"  总交易次数:     {results['total_trades']}")
+    print(f"  已平仓交易:     {results.get('closed_trades', 0)}")
+    print(f"  胜率:           {results.get('win_rate_pct', results.get('win_rate', 0.0)):.2f}%")
+    print(f"  盈利因子:       {results['profit_factor']:.2f}")
+    print(f"  平均每笔盈亏:   ${results.get('avg_trade_profit', 0.0):,.2f}")
+    print(f"  平均持仓时间:   {results.get('avg_holding_hours', results.get('avg_holding_time', 0.0)):.1f} 小时")
+    print(f"\n资金状态:")
+    print(f"  账户余额:       ${results.get('final_balance', results['initial_balance']):,.2f}")
+    if results.get('final_long_position', 0) > 0:
+        print(f"  做多持仓:       {results.get('final_long_position', 0):.4f} 均价 ${results.get('long_avg_price', 0):,.2f}")
+    if results.get('final_short_position', 0) > 0:
+        print(f"  做空持仓:       {results.get('final_short_position', 0):.4f} 均价 ${results.get('short_avg_price', 0):,.2f}")
     print("=" * 60)
 
 
@@ -267,10 +276,10 @@ def generate_visualizations(results: Dict[str, Any], chart_dir: Path) -> None:
     equity_curve = results["equity_curve"]
 
     plt.figure(figsize=(12, 6))
-    plt.plot(timestamps, equity_curve, label="Equity Curve")
-    plt.title("Chan Strategy Equity Curve")
-    plt.xlabel("Date")
-    plt.ylabel("Equity ($)")
+    plt.plot(timestamps, equity_curve, label="权益曲线")
+    plt.title("缠论策略权益曲线")
+    plt.xlabel("日期")
+    plt.ylabel("权益 ($)")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
@@ -284,10 +293,10 @@ def generate_visualizations(results: Dict[str, Any], chart_dir: Path) -> None:
     ]
     if returns:
         plt.figure(figsize=(12, 6))
-        plt.plot(timestamps[1 : len(returns) + 1], returns, label="Period Return")
-        plt.title("Chan Strategy Returns")
-        plt.xlabel("Date")
-        plt.ylabel("Return (%)")
+        plt.plot(timestamps[1 : len(returns) + 1], returns, label="周期收益率")
+        plt.title("缠论策略收益率")
+        plt.xlabel("日期")
+        plt.ylabel("收益率 (%)")
         plt.grid(True)
         plt.legend()
         plt.tight_layout()
@@ -300,10 +309,10 @@ def generate_visualizations(results: Dict[str, Any], chart_dir: Path) -> None:
     drawdown = (equity_array - running_max) / safe_running_max * 100
 
     plt.figure(figsize=(12, 6))
-    plt.plot(timestamps, drawdown, label="Drawdown")
-    plt.title("Chan Strategy Drawdown")
-    plt.xlabel("Date")
-    plt.ylabel("Drawdown (%)")
+    plt.plot(timestamps, drawdown, label="回撤")
+    plt.title("缠论策略回撤")
+    plt.xlabel("日期")
+    plt.ylabel("回撤 (%)")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()

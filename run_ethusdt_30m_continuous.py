@@ -55,9 +55,9 @@ def main():
         
         # 连续循环交易配置（使用默认值）
         "--investment-ratio", "0.10",      # 10%投入
-        "--leverage", "50",                  # 50倍杠杆
-        "--long-stop-loss-multiplier", "1.20",   # 多单止损120%
-        "--short-stop-loss-multiplier", "0.80",  # 空单止损80%
+        "--leverage", "30",                  # 30倍杠杆（优化：降低风险）
+        "--long-stop-loss-multiplier", "1.50",   # 多单止损150%（优化：放宽）
+        "--short-stop-loss-multiplier", "0.70",  # 空单止损70%（优化：放宽）
     ]
     
     print("\n执行命令:")
@@ -68,9 +68,9 @@ def main():
     print("  初始资金: $10,000")
     print(f"  数据范围: {start_date} ~ {end_date} ")
     print("  投入比例: 10%")
-    print("  杠杆倍数: 50x")
-    print("  多单止损: 爆仓价 × 120%")
-    print("  空单止损: 爆仓价 × 80%")
+    print("  杠杆倍数: 30x")
+    print("  多单止损: 爆仓价 × 150%")
+    print("  空单止损: 爆仓价 × 70%")
     print("\n" + "-" * 70)
     print("开始运行回测...\n")
     

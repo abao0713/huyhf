@@ -228,8 +228,8 @@ class ChanStrategy(BaseStrategy):
             "kline_index": -1,        # 上次触发做空信号的K线索引
             "cooldown_counter": 0     # 做空冷却期计数器
         }
-        self.long_signal_cooldown_bars = 5   # 做多冷却期
-        self.short_signal_cooldown_bars = 5  # 做空冷却期
+        self.long_signal_cooldown_bars = 6   # 做多冷却期（优化：8→6，增加交易频率）
+        self.short_signal_cooldown_bars = 6  # 做空冷却期（优化：8→6，增加交易频率）
         self._trend_position_mult: float = 1.0  # EMA趋势仓位系数（方案A：分级过滤）
         self._time_position_mult: float = 1.0   # 时间仓位系数（方案B：亚盘降仓）
 
@@ -1240,8 +1240,8 @@ class ChanStrategy(BaseStrategy):
                 ratio = current_area / prev_area
                 logger.info(f"底背驰检测: 当前低点={current_low}, 前低点={prev_low}, "
                            f"当前MACD面积={current_area:.4f}, 前MACD面积={prev_area:.4f}, "
-                           f"比值={ratio:.4f}, 阈值=0.9")
-                if current_area >= prev_area * 0.9:
+                           f"比值={ratio:.4f}, 阈值=0.85")
+                if current_area >= prev_area * 0.85:
                     return True
             else:
                 if current_area >= 0:
@@ -1301,8 +1301,8 @@ class ChanStrategy(BaseStrategy):
                 ratio = current_area / prev_area
                 logger.info(f"顶背驰检测: 当前高点={current_high}, 前高点={prev_high}, "
                            f"当前MACD面积={current_area:.4f}, 前MACD面积={prev_area:.4f}, "
-                           f"比值={ratio:.4f}, 阈值=0.9")
-                if current_area < prev_area * 0.9:
+                           f"比值={ratio:.4f}, 阈值=0.85")
+                if current_area < prev_area * 0.85:
                     return True
             else:
                 if current_area < 0:
@@ -1469,76 +1469,38 @@ class ChanStrategy(BaseStrategy):
 
     def _get_trend_filter_result(self, action: str) -> float:
         """
-        根据 EMA 趋势返回仓位系数（替代旧的二元过滤）
-
-        使用 EMA20/EMA60 双均线系统识别趋势方向和强度：
-
-        返回:
-          0.0  = 完全拒绝信号（强逆势，风险不可控）
-          1.0  = 不受影响（顺势/震荡）
-          0.3~0.7 = 降仓通过（轻逆势，减仓控制风险）
-
-        趋势判断标准：
-        - 多头趋势：EMA20 > EMA60 且 价格 > EMA20
-        - 空头趋势：EMA20 < EMA60 且 价格 < EMA20
-        - 震荡市：其他情况
-
-        分级逻辑：
-        - 震荡市: 1.0（允许双向）
-        - 顺势: 1.0（完全仓位）
-        - 轻逆势: 0.5（价格仍在均线附近，背离不大）
-        - 强逆势: 0.0（均线斜率陡峭，逆势风险极高）
+        根据EMA趋势 + EMA120中期方向返回仓位系数
         """
         ema_trend = self._get_ema_trend()
 
-        # 震荡市或未知状态：完全允许
         if ema_trend in ("neutral", "unknown"):
             return 1.0
 
-        # 计算趋势强度（用于分级）
-        trend_strength = self._calculate_trend_strength()
-
-        # 空头趋势 + BUY信号
         if ema_trend == "bearish" and action == "BUY":
-            if trend_strength > 0.8:  # 强空头：完全拒绝
-                logger.info(
-                    f"[ChanStrategy] 强空头趋势(强度={trend_strength:.2f})，"
-                    f"拒绝BUY信号"
-                )
-                return 0.0
-            elif trend_strength > 0.5:  # 中等空头：降仓50%
-                logger.info(
-                    f"[ChanStrategy] 中等空头趋势(强度={trend_strength:.2f})，"
-                    f"BUY信号降仓50%"
-                )
-                return 0.5
-            else:  # 弱空头：降仓70%
-                logger.info(
-                    f"[ChanStrategy] 弱空头趋势(强度={trend_strength:.2f})，"
-                    f"BUY信号降仓30%（可尝试抄底）"
-                )
-                return 0.7
+            logger.info(f"[ChanStrategy] 空头趋势，拒绝BUY信号（仅顺势做多）")
+            return 0.0
 
-        # 多头趋势 + SELL信号
         if ema_trend == "bullish" and action == "SELL":
-            if trend_strength > 0.8:  # 强多头：完全拒绝
-                logger.info(
-                    f"[ChanStrategy] 强多头趋势(强度={trend_strength:.2f})，"
-                    f"拒绝SELL信号"
-                )
-                return 0.0
-            elif trend_strength > 0.5:  # 中等多头：降仓50%
-                logger.info(
-                    f"[ChanStrategy] 中等多头趋势(强度={trend_strength:.2f})，"
-                    f"SELL信号降仓50%"
-                )
-                return 0.5
-            else:  # 弱多头：降仓70%
-                logger.info(
-                    f"[ChanStrategy] 弱多头趋势(强度={trend_strength:.2f})，"
-                    f"SELL信号降仓30%（可尝试做空）"
-                )
-                return 0.7
+            logger.info(f"[ChanStrategy] 多头趋势，拒绝SELL信号（仅顺势做空）")
+            return 0.0
+
+        # === 中期方向偏置：SMA120斜率判断宏观方向 ===
+        if action == "SELL":
+            ma_long = self.ma_long
+            if not ma_long.empty and len(ma_long) >= 20:
+                sma_now = float(ma_long.iloc[-1])
+                sma_20ago = float(ma_long.iloc[-20])
+                if sma_20ago > 0 and sma_now / sma_20ago > 1.005:
+                    logger.info(f"[ChanStrategy] SMA120中期上行(增速{(sma_now/sma_20ago-1)*100:.2f}%)，拒绝SELL信号")
+                    return 0.0
+        if action == "BUY":
+            ma_long = self.ma_long
+            if not ma_long.empty and len(ma_long) >= 20:
+                sma_now = float(ma_long.iloc[-1])
+                sma_20ago = float(ma_long.iloc[-20])
+                if sma_20ago > 0 and sma_now / sma_20ago < 0.995:
+                    logger.info(f"[ChanStrategy] SMA120中期下行(跌幅{(1-sma_now/sma_20ago)*100:.2f}%)，拒绝BUY信号")
+                    return 0.0
 
         return 1.0
 
@@ -1576,6 +1538,23 @@ class ChanStrategy(BaseStrategy):
 
         strength = 0.4 * slope_norm + 0.6 * div_norm
         return round(min(strength, 1.0), 2)
+
+    def _calculate_rsi(self, period: int = 14) -> Optional[float]:
+        closes = self.df_30m['close'].values
+        if len(closes) < period + 1:
+            return None
+        try:
+            deltas = np.diff(closes[-period-1:])
+            gains = np.where(deltas > 0, deltas, 0.0)
+            losses = np.where(deltas < 0, -deltas, 0.0)
+            avg_gain = np.mean(gains)
+            avg_loss = np.mean(losses)
+            if avg_loss == 0:
+                return 100.0
+            rsi = 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+            return round(rsi, 1)
+        except Exception:
+            return None
 
     def should_filter_by_trend(self, action: str) -> bool:
         """
@@ -1903,6 +1882,11 @@ class ChanStrategy(BaseStrategy):
         if self.short_signal_info["cooldown_counter"] > 0:
             self.short_signal_info["cooldown_counter"] -= 1
 
+        # ===== RSI确认（超买超卖过滤假信号）=====
+        rsi = self._calculate_rsi()
+        rsi_ok_buy = rsi is not None and rsi < 45
+        rsi_ok_sell = rsi is not None and rsi > 55
+
         # 底背驰 -> 纯做多信号
         if last_pen.direction == "down":
             if self._check_bottom_divergence(last_pen):
@@ -1911,6 +1895,10 @@ class ChanStrategy(BaseStrategy):
                     self.long_signal_info["pen_index"] == len(self.pens) - 1 and
                     self.long_signal_info["cooldown_counter"] > 0):
                     logger.debug(f"[ChanStrategy] BUY信号冷却期中，跳过 (剩余{self.long_signal_info['cooldown_counter']}根K线)")
+                    return None
+
+                if not rsi_ok_buy:
+                    logger.info(f"[ChanStrategy] RSI={rsi:.1f}偏高，跳过BUY信号（需RSI<45）")
                     return None
 
                 # 原始信号
@@ -1962,27 +1950,9 @@ class ChanStrategy(BaseStrategy):
                 logger.info(f"[ChanStrategy] 信号: {signal}")
                 return signal
 
-        # 顶背驰 -> 纯做空信号（三层检测机制）
+        # 顶背驰 -> 纯做空信号（仅严格顶背驰）
         elif last_pen.direction == "up":
-            sell_signal_type = None
-
-            # 第一层：严格顶背驰（创新高 + 面积缩小）
             if self._check_top_divergence(last_pen):
-                sell_signal_type = "strict_divergence"
-                base_reason = f"{self.time_frame}顶背驰(严格)"
-
-            # 第二层：宽松顶背驰（面积显著缩小，不要求创新高）
-            elif self._check_top_divergence_relaxed(last_pen):
-                sell_signal_type = "relaxed_divergence"
-                base_reason = f"{self.time_frame}顶背驰(宽松)"
-
-            # 第三层：均线压力位反转（触及MA60压力）
-            elif self._check_resistance_reversal(last_pen):
-                sell_signal_type = "resistance_reversal"
-                base_reason = f"{self.time_frame}MA60压力位反转"
-
-            # 如果任何一层检测到卖出信号
-            if sell_signal_type:
                 # 检查做空冷却期
                 if (self.short_signal_info["action"] == "SELL" and
                     self.short_signal_info["pen_index"] == len(self.pens) - 1 and
@@ -1990,17 +1960,15 @@ class ChanStrategy(BaseStrategy):
                     logger.debug(f"[ChanStrategy] SELL信号冷却期中，跳过 (剩余{self.short_signal_info['cooldown_counter']}根K线)")
                     return None
 
-                base_action = "SELL"
+                if not rsi_ok_sell:
+                    logger.info(f"[ChanStrategy] RSI={rsi:.1f}偏低，跳过SELL信号（需RSI>55）")
+                    return None
 
-                # 共振评估（如果启用）
+                base_action = "SELL"
+                base_reason = f"{self.time_frame}顶背驰"
+
                 if self.enable_resonance:
                     resonance_level, reason = self._evaluate_sell_signal_resonance(last_pen)
-                    # 如果是宽松或压力位信号，降低共振级别
-                    if sell_signal_type in ["relaxed_divergence", "resistance_reversal"]:
-                        if resonance_level == "strong":
-                            resonance_level = "normal"
-                        elif resonance_level == "normal":
-                            resonance_level = "weak"
                     signal.update({
                         "action": base_action,
                         "stop_loss": last_pen.high * 1.005,
@@ -2009,7 +1977,6 @@ class ChanStrategy(BaseStrategy):
                         "resonance_level": resonance_level,
                         "position_size_ratio": self.RESONANCE_POSITION_SIZING[resonance_level] * self._trend_position_mult * self._time_position_mult,
                         "ma_info": self._get_ma_signal(last_pen.high) if hasattr(self, '_get_ma_signal') else {},
-                        "signal_type": sell_signal_type,
                         "trend_mult": self._trend_position_mult,
                         "time_mult": self._time_position_mult
                     })
@@ -2018,11 +1985,9 @@ class ChanStrategy(BaseStrategy):
                         "action": base_action,
                         "stop_loss": last_pen.high * 1.005,
                         "reason": base_reason,
-                        "position": "short",
-                        "signal_type": sell_signal_type
+                        "position": "short"
                     })
 
-                # 记录做空信号信息并启动冷却期
                 self.short_signal_info.update({
                     "action": "SELL",
                     "pen_index": len(self.pens) - 1,
@@ -2030,7 +1995,6 @@ class ChanStrategy(BaseStrategy):
                     "cooldown_counter": self.short_signal_cooldown_bars
                 })
 
-                # ===== 方案4：盈亏比过滤器 =====
                 rr_pass, rr_ratio = self.check_risk_reward_ratio(
                     "SELL",
                     last_pen.high,
@@ -2041,7 +2005,7 @@ class ChanStrategy(BaseStrategy):
 
                 signal["risk_reward_ratio"] = rr_ratio
 
-                logger.info(f"[ChanStrategy] 卖出信号: 类型={sell_signal_type}, 信号={signal}")
+                logger.info(f"[ChanStrategy] 信号: {signal}")
                 return signal
 
         return signal

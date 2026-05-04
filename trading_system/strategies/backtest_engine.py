@@ -46,32 +46,32 @@ class BacktestConfig:
     progress_bar: bool = True
 
     # 连续循环交易配置参数
-    investment_ratio: float = 0.10  # 每次投入总金额的比例，默认10%
-    leverage: int = 50  # 杠杆倍数，默认50倍
-    long_stop_loss_multiplier: float = 1.20  # 多单止损 = 爆仓价格 * 此值，默认120%
-    short_stop_loss_multiplier: float = 0.80  # 空单止损 = 爆仓价格 * 此值，默认80%
+    investment_ratio: float = 0.10  # 每次投入总金额的比例，10%
+    leverage: int = 30  # 杠杆倍数，降低到30倍控制风险（优化：从50下调）
+    long_stop_loss_multiplier: float = 1.50  # 多单止损 = 爆仓价格 * 此值，放宽到150%
+    short_stop_loss_multiplier: float = 0.70  # 空单止损 = 爆仓价格 * 此值，放宽到70%
 
-    # ATR止损配置（新增 - 第三轮优化）
-    use_atr_stop_loss: bool = True  # 是否启用ATR止损
-    atr_period: int = 14  # ATR计算周期
-    atr_multiplier: float = 3.0  # ATR倍数（止损距离 = ATR * multiplier）【从2.5优化至3.0，更宽松】
+    # ATR止损配置
+    use_atr_stop_loss: bool = True
+    atr_period: int = 14
+    atr_multiplier: float = 3.5  # ATR倍数，更宽松（优化：3.0→3.5）
 
-    # 动态追踪止损配置（新增 - 第三轮优化）
-    use_trailing_stop: bool = True  # 是否启用追踪止损
-    trailing_stop_activation: float = 0.04  # 激活追踪止损的盈利比例(4%)【从3%优化至4%】
-    trailing_stop_distance: float = 0.025  # 追踪止损距离(2.5%)【从2%优化至2.5%】
-    trailing_stop_step: float = 0.015  # 追踪止损步进(1.5%)【从1%优化至1.5%】
+    # 动态追踪止损配置
+    use_trailing_stop: bool = True
+    trailing_stop_activation: float = 0.03  # 激活追踪止损的盈利比例(3%)
+    trailing_stop_distance: float = 0.025  # 追踪止损距离(2.5%)
+    trailing_stop_step: float = 0.015  # 追踪止损步进(1.5%)
 
     # 做多止盈止损（独立）
-    long_take_profit_ratio: float = 0.05       # 做多止盈 5%
-    long_stop_loss_ratio: float = 0.03         # 做多止损 3%
-    long_trailing_stop_activation: float = 0.04  # 做多追踪止损激活阈值
+    long_take_profit_ratio: float = 0.04       # 做多止盈 4%（放宽，让盈利交易充分发展）
+    long_stop_loss_ratio: float = 0.06         # 做多止损 6%（放宽，减少震荡误触）
+    long_trailing_stop_activation: float = 0.03  # 做多追踪止损激活 3%（延迟激活，让利润增长）
     long_trailing_stop_distance: float = 0.02  # 做多追踪止损距离 2%
 
     # 做空止盈止损（独立）
-    short_take_profit_ratio: float = 0.05       # 做空止盈 5%
-    short_stop_loss_ratio: float = 0.03         # 做空止损 3%
-    short_trailing_stop_activation: float = 0.04  # 做空追踪止损激活阈值
+    short_take_profit_ratio: float = 0.04       # 做空止盈 4%（放宽，让盈利交易充分发展）
+    short_stop_loss_ratio: float = 0.06         # 做空止损 6%（放宽，减少震荡误触）
+    short_trailing_stop_activation: float = 0.03  # 做空追踪止损激活 3%（延迟激活，让利润增长）
     short_trailing_stop_distance: float = 0.02  # 做空追踪止损距离 2%
 
     # 限价单配置（新增 - 价格偏差检测）
@@ -268,6 +268,46 @@ class BacktestEngine:
         self.data_manager = BacktestDataManager(str(self.data_dir))
         self.funding_calculator = FundingFeeCalculator()
         self._reset_state()
+
+    @property
+    def position(self) -> float:
+        """向后兼容：净持仓 = 多单 - 空单"""
+        return float(self.long_position - self.short_position)
+
+    @position.setter
+    def position(self, value: float) -> None:
+        """向后兼容：设置净持仓"""
+        pass
+
+    @property
+    def avg_price(self) -> float:
+        """向后兼容：返回有持仓方向的均价"""
+        if self.long_position > 0:
+            return self.long_avg_price
+        if self.short_position > 0:
+            return self.short_avg_price
+        return 0.0
+
+    @avg_price.setter
+    def avg_price(self, value: float) -> None:
+        """向后兼容：设置均价"""
+        pass
+
+    @property
+    def long_position(self) -> float:
+        return self._long_position
+
+    @long_position.setter
+    def long_position(self, value: float) -> None:
+        self._long_position = float(value)
+
+    @property
+    def short_position(self) -> float:
+        return self._short_position
+
+    @short_position.setter
+    def short_position(self, value: float) -> None:
+        self._short_position = float(value)
 
     def _reset_state(self) -> None:
         """
@@ -1183,130 +1223,7 @@ class BacktestEngine:
         # 可以添加其他验证逻辑
         return True
 
-    def _open_long_position(
-            self,
-            timestamp: datetime,
-            price: float,
-            investment_ratio: float,
-            leverage: int,
-            reason: str = "反向开多"
-    ) -> None:
-        """
-        开多单（用于连续循环交易的反向开仓）
-
-        Args:
-            timestamp: 时间戳
-            price: 成交价格
-            investment_ratio: 投入比例
-            leverage: 杠杆倍数
-            reason: 开仓原因
-        """
-        # 考虑滑点
-        exec_price = price * (1 + self.config.slippage)
-
-        # 计算投入金额和数量（使用与主交易逻辑一致的计算方式）
-        base_amount = self.balance * investment_ratio
-
-        # 应用默认的仓位调整因子（与_execute_trade保持一致）
-        position_size_ratio = 0.7 * 0.5  # 共振系数0.7 × 凯利系数0.5 ≈ 0.35
-        actual_amount = base_amount * position_size_ratio
-
-        if actual_amount <= 0 or self.balance < actual_amount:
-            logger.warning(f"[BacktestEngine] 余额不足，无法开多单 (余额={self.balance:.2f}, 需要={actual_amount:.2f})")
-            return
-
-        quantity = (actual_amount * leverage) / exec_price
-
-        # 计算止损价格
-        liquidation_price = exec_price * (1 - 1/leverage)
-        stop_loss_price = liquidation_price * self.config.long_stop_loss_multiplier
-
-        # 执行买入
-        self._buy_with_reason(
-            timestamp,
-            exec_price,
-            actual_amount,
-            reason
-        )
-
-        logger.info(
-            f"[BacktestEngine] 反向开多单成功: "
-            f"投入${actual_amount:.2f}, 杠杆{leverage}x, "
-            f"数量{quantity:.4f}, 价{exec_price:.2f}, "
-            f"止损{stop_loss_price:.2f}"
-        )
-
-        # 初始化追踪止损
-        self._initialize_stop_loss(exec_price, "long")
-
-    def _open_short_position(
-            self,
-            timestamp: datetime,
-            price: float,
-            investment_ratio: float,
-            leverage: int,
-            reason: str = "反向开空"
-    ) -> None:
-        """
-        开空单（用于连续循环交易的反向开仓）
-
-        Args:
-            timestamp: 时间戳
-            price: 成交价格
-            investment_ratio: 投入比例
-            leverage: 杠杆倍数
-            reason: 开仓原因
-        """
-        # 考虑滑点（做空时价格向下）
-        exec_price = price * (1 - self.config.slippage)
-
-        # 计算投入金额和数量（使用与主交易逻辑一致的计算方式）
-        base_amount = self.balance * investment_ratio
-
-        # 应用默认的仓位调整因子（与_execute_trade保持一致）
-        position_size_ratio = 0.7 * 0.5  # 共振系数0.7 × 凯利系数0.5 ≈ 0.35
-        actual_amount = base_amount * position_size_ratio
-
-        if actual_amount <= 0 or self.balance < actual_amount:
-            logger.warning(f"[BacktestEngine] 余额不足，无法开空单 (余额={self.balance:.2f}, 需要={actual_amount:.2f})")
-            return
-
-        # 执行开空操作（直接修改状态，不调用_sell_with_reason避免检查）
-        sell_amount = actual_amount / exec_price * (1 - self.config.commission)
-
-        # 计算止损价格
-        liquidation_price = exec_price * (1 + 1/leverage)
-        stop_loss_price = liquidation_price * self.config.short_stop_loss_multiplier
-
-        # 记录交易（空单用负数表示）
-        trade = TradeRecord(
-            timestamp=timestamp,
-            action="SELL",  # 开空也记录为SELL
-            price=exec_price,
-            amount=sell_amount,
-            balance=self.balance - actual_amount,
-            position=-sell_amount,  # 负数表示空单
-            equity=self.balance - actual_amount + (-sell_amount) * exec_price,
-            reason=reason
-        )
-
-        # 更新状态
-        self.position = -sell_amount  # 设置为负数表示空单
-        self.avg_price = exec_price
-        self.balance -= actual_amount
-        self.trades.append(trade)
-
-        logger.info(
-            f"[BacktestEngine] 反向开空单成功: "
-            f"投入${actual_amount:.2f}, 杠杆{leverage}x, "
-            f"数量{sell_amount:.4f}, "
-            f"价{exec_price:.2f}, 止损{stop_loss_price:.2f}"
-        )
-
-        # 初始化追踪止损
-        self._initialize_stop_loss(exec_price, "short")
-
-    def _buy_with_reason(
+    def _open_long(
             self,
             timestamp: datetime,
             price: float,
@@ -1314,48 +1231,175 @@ class BacktestEngine:
             reason: str
     ) -> None:
         """
-        带原因的买入
+        开多单，更新 long_position, long_avg_price
 
         Args:
             timestamp: 时间戳
-            price: 价格
-            amount: 金额
-            reason: 原因
+            price: 成交价格
+            amount: 投入金额
+            reason: 开仓原因
         """
         if amount <= 0 or price <= 0:
             return
 
-        # 计算可买入数量
-        buy_amount = amount / price * (1 - self.config.commission)
-        if buy_amount <= 0:
+        buy_qty = amount / price * (1 - self.config.commission)
+        if buy_qty <= 0:
             return
 
-        # 记录交易
+        if self.long_position == 0:
+            self.long_avg_price = price
+        else:
+            total_cost = self.long_position * self.long_avg_price + buy_qty * price
+            self.long_avg_price = total_cost / (self.long_position + buy_qty)
+
+        self.long_position += buy_qty
+        self.balance -= amount
+
         trade = TradeRecord(
             timestamp=timestamp,
             action="BUY",
             price=price,
-            amount=buy_amount,
-            balance=self.balance - amount,
-            position=self.position + buy_amount,
-            equity=self.balance - amount + (self.position + buy_amount) * price,
-            reason=reason
+            amount=buy_qty,
+            balance=self.balance,
+            position=float(self.long_position - self.short_position),
+            equity=self.balance + self.long_position * price - self.short_position * price,
+            reason=reason,
+            long_position=self.long_position,
+            short_position=self.short_position
         )
-
-        # 更新状态
-        if self.position == 0:
-            self.avg_price = price
-        else:
-            total_cost = self.position * self.avg_price + buy_amount * price
-            self.avg_price = total_cost / (self.position + buy_amount)
-
-        self.position += buy_amount
-        self.balance -= amount
         self.trades.append(trade)
 
-        logger.info("买入 %.4f @ %.2f, 原因: %s", buy_amount, price, reason)
+        logger.info("[LONG] 开多 %.4f @ %.2f, 原因: %s", buy_qty, price, reason)
 
-    def _close_short_position(
+    def _close_long(
+            self,
+            timestamp: datetime,
+            price: float,
+            reason: str
+    ) -> Optional[TradeRecord]:
+        """
+        平多单，计算盈亏，更新余额
+
+        Args:
+            timestamp: 时间戳
+            price: 平仓价格
+            reason: 平仓原因
+
+        Returns:
+            TradeRecord 或 None（如果无多单可平）
+        """
+        if self.long_position <= 0 or price <= 0:
+            return None
+
+        qty = self.long_position
+        proceeds = qty * price * (1 - self.config.commission)
+        cost = qty * self.long_avg_price
+        profit = proceeds - cost
+        profit_pct = (profit / cost * 100) if cost > 0 else 0.0
+
+        if profit < 0:
+            self.consecutive_losses += 1
+            self.max_consecutive_losses = max(
+                self.max_consecutive_losses, self.consecutive_losses
+            )
+        else:
+            self.consecutive_losses = 0
+
+        self.balance += proceeds
+        self.long_position = 0.0
+        self.long_avg_price = 0.0
+
+        self.long_trailing_stop_price = 0.0
+        self.long_highest_price = 0.0
+        self.long_initial_stop_loss_price = 0.0
+        self.long_is_trailing_active = False
+
+        trade = TradeRecord(
+            timestamp=timestamp,
+            action="SELL",
+            price=price,
+            amount=qty,
+            balance=self.balance,
+            position=float(self.long_position - self.short_position),
+            equity=self.balance + self.long_position * price - self.short_position * price,
+            profit=profit,
+            profit_pct=profit_pct,
+            reason=reason,
+            long_position=self.long_position,
+            short_position=self.short_position
+        )
+        self.trades.append(trade)
+
+        logger.info(
+            "[LONG] 平多 %.4f @ %.2f, 利润: %.2f (%.2f%%), 原因: %s",
+            qty, price, profit, profit_pct, reason
+        )
+
+        return trade
+
+    def _open_short(
+            self,
+            timestamp: datetime,
+            price: float,
+            investment_ratio: float,
+            leverage: int,
+            reason: str = "开空"
+    ) -> None:
+        """
+        开空单，更新 short_position, short_avg_price
+
+        Args:
+            timestamp: 时间戳
+            price: 成交价格
+            investment_ratio: 投入比例
+            leverage: 杠杆倍数
+            reason: 开仓原因
+        """
+        exec_price = price * (1 - self.config.slippage)
+        base_amount = self.balance * investment_ratio
+        position_size_ratio = 0.7 * 0.5
+        actual_amount = base_amount * position_size_ratio
+
+        if actual_amount <= 0 or self.balance < actual_amount:
+            logger.warning(f"[SHORT] 余额不足，无法开空单 (余额={self.balance:.2f}, 需要={actual_amount:.2f})")
+            return
+
+        sell_qty = actual_amount / exec_price * (1 - self.config.commission)
+        if sell_qty <= 0:
+            return
+
+        if self.short_position == 0:
+            self.short_avg_price = exec_price
+        else:
+            total_value = self.short_position * self.short_avg_price + sell_qty * exec_price
+            self.short_avg_price = total_value / (self.short_position + sell_qty)
+
+        self.short_position += sell_qty
+        self.balance -= actual_amount
+
+        trade = TradeRecord(
+            timestamp=timestamp,
+            action="SELL",
+            price=exec_price,
+            amount=sell_qty,
+            balance=self.balance,
+            position=float(self.long_position - self.short_position),
+            equity=self.balance + self.long_position * exec_price - self.short_position * exec_price,
+            reason=reason,
+            long_position=self.long_position,
+            short_position=self.short_position
+        )
+        self.trades.append(trade)
+
+        liquidation_price = exec_price * (1 + 1/leverage)
+        stop_loss_price = liquidation_price * self.config.short_stop_loss_multiplier
+
+        logger.info(
+            "[SHORT] 开空 %.4f @ %.2f, 投入${%.2f}, 杠杆%dx, 止损%.2f, 原因: %s",
+            sell_qty, exec_price, actual_amount, leverage, stop_loss_price, reason
+        )
+
+    def _close_short(
             self,
             timestamp: datetime,
             price: float,
@@ -1363,12 +1407,6 @@ class BacktestEngine:
     ) -> Optional[TradeRecord]:
         """
         平空单（买入平仓），正确计算空单盈亏
-
-        空单盈亏公式:
-          cost = |position| * avg_price  （开空时"借入"的价值）
-          proceeds = |position| * price   （平空时"还回"的价值）
-          profit = cost - proceeds        （正数=盈利，负数=亏损）
-          profit_pct = (avg_price - price) / avg_price * 100
 
         Args:
             timestamp: 时间戳
@@ -1378,16 +1416,15 @@ class BacktestEngine:
         Returns:
             TradeRecord 或 None（如果无空单可平）
         """
-        if self.position >= 0 or price <= 0:
+        if self.short_position <= 0 or price <= 0:
             return None
 
-        abs_qty = abs(self.position)
-        proceeds = abs_qty * price * (1 - self.config.commission)  # 买入平仓还回价值
-        cost = abs_qty * self.avg_price  # 开空时借入价值
-        profit = cost - proceeds  # 正数=盈利(价格跌了)，负数=亏损(价格涨了)
-        profit_pct = ((self.avg_price - price) / self.avg_price * 100) if self.avg_price > 0 else 0.0
+        qty = self.short_position
+        proceeds = qty * price * (1 - self.config.commission)
+        cost = qty * self.short_avg_price
+        profit = cost - proceeds
+        profit_pct = ((self.short_avg_price - price) / self.short_avg_price * 100) if self.short_avg_price > 0 else 0.0
 
-        # 更新连续亏损记录
         if profit < 0:
             self.consecutive_losses += 1
             self.max_consecutive_losses = max(
@@ -1396,53 +1433,104 @@ class BacktestEngine:
         else:
             self.consecutive_losses = 0
 
+        self.balance += proceeds
+        self.short_position = 0.0
+        self.short_avg_price = 0.0
+
+        self.short_trailing_stop_price = float('inf')
+        self.short_lowest_price = float('inf')
+        self.short_initial_stop_loss_price = float('inf')
+        self.short_is_trailing_active = False
+
         trade = TradeRecord(
             timestamp=timestamp,
-            action="BUY",  # 平空 = 买入
+            action="BUY",
             price=price,
-            amount=abs_qty,
-            balance=self.balance + proceeds,
-            position=0.0,
-            equity=self.balance + proceeds,
+            amount=qty,
+            balance=self.balance,
+            position=float(self.long_position - self.short_position),
+            equity=self.balance + self.long_position * price - self.short_position * price,
             profit=profit,
             profit_pct=profit_pct,
-            reason=reason
+            reason=reason,
+            long_position=self.long_position,
+            short_position=self.short_position
         )
-
-        self.balance += proceeds
-        self.position = 0.0
-        self.avg_price = 0.0
         self.trades.append(trade)
 
         logger.info(
-            f"[BacktestEngine] 平空单: {abs_qty:.4f} @ {price:.2f}, "
-            f"利润: {profit:+.2f} ({profit_pct:+.2f}%), 原因: {reason}"
+            "[SHORT] 平空 %.4f @ %.2f, 利润: %.2f (%.2f%%), 原因: %s",
+            qty, price, profit, profit_pct, reason
         )
 
         return trade
 
+    def _buy_with_reason(
+            self,
+            timestamp: datetime,
+            price: float,
+            amount: float,
+            reason: str
+    ) -> None:
+        """
+        带原因的买入（用于平空单：买入平仓）
+
+        Args:
+            timestamp: 时间戳
+            price: 价格
+            amount: 数量（合约张数）
+            reason: 原因
+        """
+        if amount <= 0 or price <= 0:
+            return
+
+        buy_amount = amount / price * (1 - self.config.commission)
+        if buy_amount <= 0:
+            return
+
+        if self.long_position == 0:
+            self.long_avg_price = price
+        else:
+            total_cost = self.long_position * self.long_avg_price + buy_amount * price
+            self.long_avg_price = total_cost / (self.long_position + buy_amount)
+
+        self.long_position += buy_amount
+        self.balance -= amount
+
+        trade = TradeRecord(
+            timestamp=timestamp,
+            action="BUY",
+            price=price,
+            amount=buy_amount,
+            balance=self.balance,
+            position=float(self.long_position - self.short_position),
+            equity=self.balance + self.long_position * price - self.short_position * price,
+            reason=reason,
+            long_position=self.long_position,
+            short_position=self.short_position
+        )
+        self.trades.append(trade)
+
+        logger.info("买入 %.4f @ %.2f, 原因: %s", buy_amount, price, reason)
+
     def _sell_with_reason(self, timestamp: datetime, price: float, reason: str) -> None:
         """
-        带原因的卖出
+        带原因的卖出（用于平多单）
 
         Args:
             timestamp: 时间戳
             price: 价格
             reason: 原因
         """
-        if self.position <= 0 or price <= 0:
+        if self.long_position <= 0 or price <= 0:
             return
 
-        # 计算卖出收益
-        amount = self.position
+        amount = self.long_position
         proceeds = amount * price * (1 - self.config.commission)
-
-        # 计算利润
-        cost = self.position * self.avg_price
+        cost = self.long_position * self.long_avg_price
         profit = proceeds - cost
         profit_pct = (profit / cost * 100) if cost > 0 else 0.0
 
-        # 更新连续亏损记录
         if profit < 0:
             self.consecutive_losses += 1
             self.max_consecutive_losses = max(
@@ -1452,24 +1540,24 @@ class BacktestEngine:
         else:
             self.consecutive_losses = 0
 
-        # 记录交易
+        self.balance += proceeds
+        self.long_position = 0.0
+        self.long_avg_price = 0.0
+
         trade = TradeRecord(
             timestamp=timestamp,
             action="SELL",
             price=price,
             amount=amount,
-            balance=self.balance + proceeds,
+            balance=self.balance,
             position=0.0,
-            equity=self.balance + proceeds,
+            equity=self.balance,
             profit=profit,
             profit_pct=profit_pct,
-            reason=reason
+            reason=reason,
+            long_position=0.0,
+            short_position=self.short_position
         )
-
-        # 更新状态
-        self.balance += proceeds
-        self.position = 0.0
-        self.avg_price = 0.0
         self.trades.append(trade)
 
         logger.info(
@@ -1484,24 +1572,15 @@ class BacktestEngine:
         Args:
             kline: 当前K线（可以是namedtuple或pd.Series）
         """
-        # 支持namedtuple和Series两种格式
         if hasattr(kline, 'close'):
             current_price = float(kline.close)
         else:
             current_price = float(kline["close"])
 
-        # 计算持仓价值（支持多空双向）
-        if self.position > 0:  # 多头持仓
-            position_value = self.position * current_price
-        elif self.position < 0:  # 空头持仓
-            # 空头浮动盈亏 = (开仓价 - 当前价) × 数量
-            position_value = (self.avg_price - current_price) * abs(self.position)
-        else:  # 无持仓
-            position_value = 0.0
+        long_pnl = (current_price - self.long_avg_price) * self.long_position if self.long_position > 0 else 0.0
+        short_pnl = (self.short_avg_price - current_price) * self.short_position if self.short_position > 0 else 0.0
+        equity = self.balance + long_pnl + short_pnl
 
-        equity = self.balance + position_value
-
-        # 记录时间戳和权益
         if hasattr(kline, 'open_time'):
             self.timestamps.append(kline.open_time)
         else:
@@ -1509,7 +1588,6 @@ class BacktestEngine:
 
         self.equity_curve.append(equity)
 
-        # 更新最大回撤
         self.max_equity = max(self.max_equity, equity)
         if self.max_equity > 0:
             drawdown = (self.max_equity - equity) / self.max_equity * 100
@@ -1642,8 +1720,12 @@ class BacktestEngine:
             "price_deviation_tolerance": self.config.price_deviation_tolerance,
 
             "final_balance": self.balance,
-            "final_position": self.position,
+            "final_position": float(self.long_position - self.short_position),
+            "final_long_position": self.long_position,
+            "final_short_position": self.short_position,
             "avg_position_price": self.avg_price,
+            "long_avg_price": self.long_avg_price,
+            "short_avg_price": self.short_avg_price,
             "timestamps": self.timestamps,
             "equity_curve": self.equity_curve,
         }
@@ -1689,45 +1771,61 @@ class BacktestEngine:
         """
         构建已平仓交易列表
 
+        支持双仓位模式：
+        - 多单：BUY(开) → SELL(平)，通过profit字段识别平仓交易
+        - 空单：SELL(开) → BUY(平)，通过profit字段识别平仓交易
+
         Returns:
             已平仓交易列表
         """
         closed_trades = []
 
-        # 按交易对分组
-        for i in range(0, len(self.trades) - 1, 2):
-            if i + 1 >= len(self.trades):
-                break
-
-            buy_trade = self.trades[i]
-            sell_trade = self.trades[i + 1]
-
-            if buy_trade.action != "BUY" or sell_trade.action != "SELL":
+        for i in range(len(self.trades)):
+            trade = self.trades[i]
+            if trade.profit == 0.0:
                 continue
 
-            # 计算持仓时间
+            entry_trade = None
+            for j in range(i - 1, -1, -1):
+                prev = self.trades[j]
+                if trade.action == "SELL":
+                    if prev.action == "BUY" and prev.profit == 0.0:
+                        entry_trade = prev
+                        break
+                elif trade.action == "BUY":
+                    if prev.action == "SELL" and prev.profit == 0.0:
+                        entry_trade = prev
+                        break
+
+            if entry_trade is None:
+                continue
+
             holding_hours = (
-                    (sell_trade.timestamp - buy_trade.timestamp).total_seconds() / 3600
+                (trade.timestamp - entry_trade.timestamp).total_seconds() / 3600
             )
 
-            # 计算收益
-            entry_value = buy_trade.amount * buy_trade.price
-            exit_value = sell_trade.amount * sell_trade.price
-            profit = exit_value - entry_value
-            return_pct = (profit / entry_value * 100) if entry_value > 0 else 0.0
+            if trade.action == "SELL":
+                entry_value = entry_trade.amount * entry_trade.price
+                exit_value = trade.amount * trade.price
+                profit = exit_value - entry_value
+                return_pct = (profit / entry_value * 100) if entry_value > 0 else 0.0
+            else:
+                entry_value = entry_trade.amount * entry_trade.price
+                exit_value = trade.amount * trade.price
+                profit = entry_value - exit_value
+                return_pct = (profit / entry_value * 100) if entry_value > 0 else 0.0
 
-            # 检查是否触发止损止盈
-            stop_loss_hit = "STOP_LOSS" in sell_trade.reason
-            take_profit_hit = "TAKE_PROFIT" in sell_trade.reason
+            stop_loss_hit = "止损" in trade.reason
+            take_profit_hit = "止盈" in trade.reason
 
             closed_trade = ClosedTrade(
-                entry_time=buy_trade.timestamp,
-                exit_time=sell_trade.timestamp,
-                entry_price=buy_trade.price,
-                exit_price=sell_trade.price,
-                amount=buy_trade.amount,
-                profit=profit,
-                return_pct=return_pct,
+                entry_time=entry_trade.timestamp,
+                exit_time=trade.timestamp,
+                entry_price=entry_trade.price,
+                exit_price=trade.price,
+                amount=entry_trade.amount,
+                profit=trade.profit,
+                return_pct=trade.profit_pct,
                 holding_hours=holding_hours,
                 stop_loss_hit=stop_loss_hit,
                 take_profit_hit=take_profit_hit
@@ -1863,55 +1961,53 @@ class BacktestEngine:
             return
 
         print("\n" + "=" * 60)
-        print("回测结果摘要")
+        print("  缠论策略回测报告")
         print("=" * 60)
 
-        print(f"\n📈 收益表现:")
-        print(f"   初始资金: ${results.get('initial_balance', 0):.2f}")
-        print(f"   最终权益: ${results.get('final_equity', 0):.2f}")
-        print(f"   净利润: ${results.get('net_profit', 0):.2f}")
-        print(f"   总收益率: {results.get('total_return_pct', 0):.2f}%")
+        print(f"\n收益表现:")
+        print(f"  初始资金:       ${results.get('initial_balance', 0):,.2f}")
+        print(f"  最终权益:       ${results.get('final_equity', 0):,.2f}")
+        print(f"  净利润:         ${results.get('net_profit', 0):,.2f}")
+        print(f"  总收益率:       {results.get('total_return_pct', 0):.2f}%")
 
-        print(f"\n📉 风险指标:")
-        print(f"   最大回撤: {results.get('max_drawdown_pct', 0):.2f}%")
-        print(f"   当前回撤: {results.get('current_drawdown_pct', 0):.2f}%")
-        print(f"   夏普比率: {results.get('sharpe_ratio', 0):.2f}")
+        print(f"\n风险指标:")
+        print(f"  最大回撤:       {results.get('max_drawdown_pct', 0):.2f}%")
+        print(f"  当前回撤:       {results.get('current_drawdown_pct', 0):.2f}%")
+        print(f"  夏普比率:       {results.get('sharpe_ratio', 0):.2f}")
 
-        print(f"\n📊 交易统计:")
-        print(f"   总交易次数: {results.get('total_trades', 0)}")
-        print(f"   平仓交易数: {results.get('closed_trades', 0)}")
-        print(f"   胜率: {results.get('win_rate_pct', 0):.2f}%")
-        print(f"   盈亏比: {results.get('profit_factor', 0):.2f}")
-        print(f"   平均持仓时间: {results.get('avg_holding_hours', 0):.2f}小时")
+        print(f"\n交易统计:")
+        print(f"  总交易次数:     {results.get('total_trades', 0)}")
+        print(f"  已平仓交易:     {results.get('closed_trades', 0)}")
+        print(f"  胜率:           {results.get('win_rate_pct', 0):.2f}%")
+        print(f"  盈利因子:       {results.get('profit_factor', 0):.2f}")
+        print(f"  平均每笔盈亏:   ${results.get('avg_trade_profit', 0):.2f}")
+        print(f"  平均盈利:       ${results.get('avg_win', 0):.2f}")
+        print(f"  平均亏损:       ${results.get('avg_loss', 0):.2f}")
+        print(f"  盈亏比:         {results.get('avg_return_pct', 0):.2f}%")
+        print(f"  平均持仓时间:   {results.get('avg_holding_hours', 0):.1f} 小时")
+        print(f"  最大连续亏损:   {results.get('max_consecutive_losses', 0)} 次")
 
-        print(f"\n💰 资金状态:")
-        print(f"   当前余额: ${results.get('final_balance', 0):.2f}")
-        print(f"   当前持仓: {results.get('final_position', 0):.4f}")
-        if results.get('final_position', 0) > 0:
-            print(f"   持仓均价: ${results.get('avg_position_price', 0):.2f}")
+        print(f"\n资金状态:")
+        print(f"  账户余额:       ${results.get('final_balance', 0):,.2f}")
+        final_pos = results.get('final_position', 0)
+        if results.get('final_long_position', 0) > 0:
+            print(f"  做多持仓:       {results.get('final_long_position', 0):.4f} 均价 ${results.get('long_avg_price', 0):,.2f}")
+        if results.get('final_short_position', 0) > 0:
+            print(f"  做空持仓:       {results.get('final_short_position', 0):.4f} 均价 ${results.get('short_avg_price', 0):,.2f}")
 
-        # 打印限价单统计（如果启用）
         if results.get('limit_order_enabled', False):
-            print(f"\n🎯 限价单统计:")
-            print(f"   限价单模式: {'已启用' if results.get('limit_order_enabled') else '未启用'}")
-            print(f"   价格偏差容忍度: {results.get('price_deviation_tolerance', 0)*100:.2f}%")
-            print(f"   被取消的订单数: {results.get('cancelled_orders_count', 0)}")
-            cancellation_rate = (
-                results.get('cancelled_orders_count', 0) /
-                (results.get('total_trades', 0) + results.get('cancelled_orders_count', 0)) * 100
-                if (results.get('total_trades', 0) + results.get('cancelled_orders_count', 0)) > 0
-                else 0
-            )
-            print(f"   订单取消率: {cancellation_rate:.2f}%")
+            print(f"\n限价单统计:")
+            print(f"  限价单模式:     {'已启用' if results.get('limit_order_enabled') else '未启用'}")
+            print(f"  偏差容忍度:     {results.get('price_deviation_tolerance', 0)*100:.1f}%")
+            print(f"  被取消订单数:   {results.get('cancelled_orders_count', 0)}")
 
-        # 打印资金费用汇总（如果启用）
         if "funding_fee_summary" in results:
             funding = results["funding_fee_summary"]
-            print(f"\n💸 资金费用（合约交易）:")
-            print(f"   累计支付: ${funding.get('total_paid', 0):.4f} USDT")
-            print(f"   累计收取: ${funding.get('total_received', 0):.4f} USDT")
-            print(f"   净费用: ${funding.get('net_fee', 0):.4f} USDT")
-            print(f"   结算次数: {funding.get('settlement_count', 0)} 次")
+            print(f"\n资金费用（每4小时结算）:")
+            print(f"  累计支付:       ${funding.get('total_paid', 0):.4f}")
+            print(f"  累计收取:       ${funding.get('total_received', 0):.4f}")
+            print(f"  净费用:         ${funding.get('net_fee', 0):.4f}")
+            print(f"  结算次数:       {funding.get('settlement_count', 0)} 次")
 
         print("\n" + "=" * 60)
 
