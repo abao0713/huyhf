@@ -47,9 +47,9 @@ class BacktestConfig:
 
     # 连续循环交易配置参数
     investment_ratio: float = 0.10  # 每次投入总金额的比例，10%
-    leverage: int = 30  # 杠杆倍数，降低到30倍控制风险（优化：从50下调）
-    long_stop_loss_multiplier: float = 1.50  # 多单止损 = 爆仓价格 * 此值，放宽到150%
-    short_stop_loss_multiplier: float = 0.70  # 空单止损 = 爆仓价格 * 此值，放宽到70%
+    leverage: int = 20  # 杠杆倍数，降低到20倍（优化：30→20，降低风险）
+    long_stop_loss_multiplier: float = 1.50  # 多单止损 = 爆仓价格 * 此值
+    short_stop_loss_multiplier: float = 0.70  # 空单止损 = 爆仓价格 * 此值
 
     # ATR止损配置
     use_atr_stop_loss: bool = True
@@ -63,15 +63,15 @@ class BacktestConfig:
     trailing_stop_step: float = 0.015  # 追踪止损步进(1.5%)
 
     # 做多止盈止损（独立）
-    long_take_profit_ratio: float = 0.04       # 做多止盈 4%（放宽，让盈利交易充分发展）
-    long_stop_loss_ratio: float = 0.06         # 做多止损 6%（放宽，减少震荡误触）
-    long_trailing_stop_activation: float = 0.03  # 做多追踪止损激活 3%（延迟激活，让利润增长）
+    long_take_profit_ratio: float = 0.05       # 做多止盈 5%（高胜率策略，放大盈利）
+    long_stop_loss_ratio: float = 0.05         # 做多止损 5%（方向锁定时适度收紧）
+    long_trailing_stop_activation: float = 0.025  # 做多追踪止损激活 2.5%（稍早锁利）
     long_trailing_stop_distance: float = 0.02  # 做多追踪止损距离 2%
 
     # 做空止盈止损（独立）
-    short_take_profit_ratio: float = 0.04       # 做空止盈 4%（放宽，让盈利交易充分发展）
-    short_stop_loss_ratio: float = 0.06         # 做空止损 6%（放宽，减少震荡误触）
-    short_trailing_stop_activation: float = 0.03  # 做空追踪止损激活 3%（延迟激活，让利润增长）
+    short_take_profit_ratio: float = 0.05       # 做空止盈 5%（高胜率策略，放大盈利）
+    short_stop_loss_ratio: float = 0.05         # 做空止损 5%（方向锁定时适度收紧）
+    short_trailing_stop_activation: float = 0.025  # 做空追踪止损激活 2.5%（稍早锁利）
     short_trailing_stop_distance: float = 0.02  # 做空追踪止损距离 2%
 
     # 限价单配置（新增 - 价格偏差检测）
@@ -472,6 +472,9 @@ class BacktestEngine:
 
             # 重置状态
             self._reset_state()
+
+            # 保存策略引用（供止损冷却延长使用）
+            self.strategy = strategy
 
             # 配置策略
             strategy.use_binance_client = False
@@ -917,6 +920,9 @@ class BacktestEngine:
 
             self._close_long(open_time, current_price, f"[LONG] {stop_reason}")
 
+            if profit_pct <= 0 and hasattr(self, 'strategy') and self.strategy:
+                self.strategy.extend_cooldown_after_loss("long")
+
             if profit_pct >= self.config.long_take_profit_ratio:
                 logger.info(
                     f"[LONG] 🎯 触发固定止盈: 盈利={profit_pct*100:.2f}% >= {self.config.long_take_profit_ratio*100:.1f}%"
@@ -957,6 +963,9 @@ class BacktestEngine:
             )
 
             self._close_short(open_time, current_price, f"[SHORT] {stop_reason}")
+
+            if profit_pct <= 0 and hasattr(self, 'strategy') and self.strategy:
+                self.strategy.extend_cooldown_after_loss("short")
 
             if profit_pct >= self.config.short_take_profit_ratio:
                 logger.info(

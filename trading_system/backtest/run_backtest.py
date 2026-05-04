@@ -58,8 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--leverage", 
         type=int, 
-        default=50,
-        help="杠杆倍数（默认50倍）"
+        default=20,
+        help="杠杆倍数（默认20倍）"
     )
     parser.add_argument(
         "--long-stop-loss-multiplier", 

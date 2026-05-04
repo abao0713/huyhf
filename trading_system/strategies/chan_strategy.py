@@ -230,6 +230,7 @@ class ChanStrategy(BaseStrategy):
         }
         self.long_signal_cooldown_bars = 6   # 做多冷却期（优化：8→6，增加交易频率）
         self.short_signal_cooldown_bars = 6  # 做空冷却期（优化：8→6，增加交易频率）
+        self.pending_signal = None  # 待确认信号 {"action","reason","stop_loss","pen_index",...}
         self._trend_position_mult: float = 1.0  # EMA趋势仓位系数（方案A：分级过滤）
         self._time_position_mult: float = 1.0   # 时间仓位系数（方案B：亚盘降仓）
 
@@ -1240,8 +1241,8 @@ class ChanStrategy(BaseStrategy):
                 ratio = current_area / prev_area
                 logger.info(f"底背驰检测: 当前低点={current_low}, 前低点={prev_low}, "
                            f"当前MACD面积={current_area:.4f}, 前MACD面积={prev_area:.4f}, "
-                           f"比值={ratio:.4f}, 阈值=0.85")
-                if current_area >= prev_area * 0.85:
+                           f"比值={ratio:.4f}, 阈值=0.82")
+                if current_area >= prev_area * 0.82:
                     return True
             else:
                 if current_area >= 0:
@@ -1301,8 +1302,8 @@ class ChanStrategy(BaseStrategy):
                 ratio = current_area / prev_area
                 logger.info(f"顶背驰检测: 当前高点={current_high}, 前高点={prev_high}, "
                            f"当前MACD面积={current_area:.4f}, 前MACD面积={prev_area:.4f}, "
-                           f"比值={ratio:.4f}, 阈值=0.85")
-                if current_area < prev_area * 0.85:
+                           f"比值={ratio:.4f}, 阈值=0.82")
+                if current_area < prev_area * 0.82:
                     return True
             else:
                 if current_area < 0:
@@ -1469,38 +1470,29 @@ class ChanStrategy(BaseStrategy):
 
     def _get_trend_filter_result(self, action: str) -> float:
         """
-        根据EMA趋势 + EMA120中期方向返回仓位系数
+        根据中期方向 + EMA短期趋势返回仓位系数
         """
+        primary = self._get_primary_direction()
+
+        if primary == "BULL" and action == "SELL":
+            logger.info(f"[ChanStrategy] 中期牛市(SMA120上行)，锁定方向，拒绝所有SELL信号")
+            return 0.0
+        if primary == "BEAR" and action == "BUY":
+            logger.info(f"[ChanStrategy] 中期熊市(SMA120下行)，锁定方向，拒绝所有BUY信号")
+            return 0.0
+
         ema_trend = self._get_ema_trend()
 
         if ema_trend in ("neutral", "unknown"):
             return 1.0
 
         if ema_trend == "bearish" and action == "BUY":
-            logger.info(f"[ChanStrategy] 空头趋势，拒绝BUY信号（仅顺势做多）")
+            logger.info(f"[ChanStrategy] 短期空头趋势，拒绝BUY信号（仅顺势做多）")
             return 0.0
 
         if ema_trend == "bullish" and action == "SELL":
-            logger.info(f"[ChanStrategy] 多头趋势，拒绝SELL信号（仅顺势做空）")
+            logger.info(f"[ChanStrategy] 短期多头趋势，拒绝SELL信号（仅顺势做空）")
             return 0.0
-
-        # === 中期方向偏置：SMA120斜率判断宏观方向 ===
-        if action == "SELL":
-            ma_long = self.ma_long
-            if not ma_long.empty and len(ma_long) >= 20:
-                sma_now = float(ma_long.iloc[-1])
-                sma_20ago = float(ma_long.iloc[-20])
-                if sma_20ago > 0 and sma_now / sma_20ago > 1.005:
-                    logger.info(f"[ChanStrategy] SMA120中期上行(增速{(sma_now/sma_20ago-1)*100:.2f}%)，拒绝SELL信号")
-                    return 0.0
-        if action == "BUY":
-            ma_long = self.ma_long
-            if not ma_long.empty and len(ma_long) >= 20:
-                sma_now = float(ma_long.iloc[-1])
-                sma_20ago = float(ma_long.iloc[-20])
-                if sma_20ago > 0 and sma_now / sma_20ago < 0.995:
-                    logger.info(f"[ChanStrategy] SMA120中期下行(跌幅{(1-sma_now/sma_20ago)*100:.2f}%)，拒绝BUY信号")
-                    return 0.0
 
         return 1.0
 
@@ -1539,6 +1531,38 @@ class ChanStrategy(BaseStrategy):
         strength = 0.4 * slope_norm + 0.6 * div_norm
         return round(min(strength, 1.0), 2)
 
+    def _get_primary_direction(self) -> str:
+        """
+        使用SMA120 + SMA60判断中期主要方向（40根K线窗口）
+
+        返回值:
+          "BULL"  — 中期牛市，只允许做多
+          "BEAR"  — 中期熊市，只允许做空
+          "RANGE" — 震荡，允许双向但需严格过滤
+        """
+        ma_medium = self.ma_medium
+        ma_long = self.ma_long
+        if ma_medium.empty or ma_long.empty or len(ma_long) < 40:
+            return "RANGE"
+
+        try:
+            sma120_now = float(ma_long.iloc[-1])
+            sma120_40ago = float(ma_long.iloc[-40])
+            sma60_now = float(ma_medium.iloc[-1])
+
+            if sma120_40ago <= 0:
+                return "RANGE"
+
+            sma120_change = (sma120_now - sma120_40ago) / sma120_40ago
+
+            if sma120_change > 0.003 and sma60_now > sma120_now:
+                return "BULL"
+            if sma120_change < -0.003 and sma60_now < sma120_now:
+                return "BEAR"
+            return "RANGE"
+        except Exception:
+            return "RANGE"
+
     def _calculate_rsi(self, period: int = 14) -> Optional[float]:
         closes = self.df_30m['close'].values
         if len(closes) < period + 1:
@@ -1554,6 +1578,63 @@ class ChanStrategy(BaseStrategy):
             rsi = 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
             return round(rsi, 1)
         except Exception:
+            return None
+
+    def _check_volume_confirmation(self) -> bool:
+        """
+        量能确认：当前K线成交量是否 > 20周期均量
+
+        放量说明市场参与度高，信号可信；缩量可能为假突破/假背离
+        """
+        df = self.df_30m
+        if df is None or df.empty or 'volume' not in df.columns or len(df) < 21:
+            return False
+        try:
+            volumes = df['volume'].values
+            current_vol = float(volumes[-1])
+            avg_vol = float(np.mean(volumes[-21:-1]))
+            if avg_vol <= 0:
+                return True
+            return current_vol > avg_vol
+        except Exception:
+            return True
+
+    def _check_pending_confirmation(self) -> Optional[Dict[str, Any]]:
+        """
+        确认K线机制：检查上一根K线产生的待确认信号是否被当前K线确认
+
+        - BUY信号需当前K线收阳（close > open）
+        - SELL信号需当前K线收阴（close < open）
+        """
+        pending = self.pending_signal
+        if pending is None:
+            return None
+
+        df = self.df_30m
+        if df is None or df.empty or len(df) < 2:
+            self.pending_signal = None
+            return None
+
+        try:
+            current_close = float(df['close'].iloc[-1])
+            current_open = float(df['open'].iloc[-1])
+        except Exception:
+            self.pending_signal = None
+            return None
+
+        action = pending["action"]
+        confirmed = (action == "BUY" and current_close > current_open) or \
+                    (action == "SELL" and current_close < current_open)
+
+        self.pending_signal = None
+
+        if confirmed:
+            full_signal = pending.get("signal", pending)
+            full_signal["price"] = current_close
+            logger.info(f"[ChanStrategy] 确认K线通过: {action}, 收盘={current_close:.2f}")
+            return full_signal
+        else:
+            logger.info(f"[ChanStrategy] 确认K线失败: {action}, 开={current_open:.2f} 收={current_close:.2f}，丢弃信号")
             return None
 
     def should_filter_by_trend(self, action: str) -> bool:
@@ -1848,6 +1929,27 @@ class ChanStrategy(BaseStrategy):
         last_pen = self.pens[-1]
         current_kline_idx = len(self.df_30m) - 1 if not self.df_30m.empty else 0
 
+        # ===== 确认K线：检查上一根K线的待确认信号 =====
+        confirmed_signal = self._check_pending_confirmation()
+        if confirmed_signal is not None:
+            confirmed_signal["kline_index"] = current_kline_idx
+            confirmed_signal["bar_position"] = current_kline_idx
+            if confirmed_signal["action"] == "BUY":
+                self.long_signal_info.update({
+                    "action": "BUY",
+                    "pen_index": confirmed_signal.get("pen_index", len(self.pens) - 1),
+                    "kline_index": current_kline_idx,
+                    "cooldown_counter": self.long_signal_cooldown_bars
+                })
+            else:
+                self.short_signal_info.update({
+                    "action": "SELL",
+                    "pen_index": confirmed_signal.get("pen_index", len(self.pens) - 1),
+                    "kline_index": current_kline_idx,
+                    "cooldown_counter": self.short_signal_cooldown_bars
+                })
+            return confirmed_signal
+
         # ===== 方案2：EMA趋势分级过滤（逆势降仓，不直接拒绝）=====
         if last_pen.direction == "down":
             self._trend_position_mult = self._get_trend_filter_result("BUY")
@@ -1864,6 +1966,11 @@ class ChanStrategy(BaseStrategy):
 
         # ===== 方案B：时间过滤器（亚盘降仓50%，不拒绝）=====
         self.check_time_filter()  # 设置 _time_position_mult (0.5 or 1.0)
+
+        # ===== 量能确认（放量才可信）=====
+        if not self._check_volume_confirmation():
+            logger.debug(f"[ChanStrategy] 缩量K线，跳过信号（需放量确认）")
+            return None
 
         signal = {
             "action": "HOLD",
@@ -1884,8 +1991,8 @@ class ChanStrategy(BaseStrategy):
 
         # ===== RSI确认（超买超卖过滤假信号）=====
         rsi = self._calculate_rsi()
-        rsi_ok_buy = rsi is not None and rsi < 45
-        rsi_ok_sell = rsi is not None and rsi > 55
+        rsi_ok_buy = rsi is not None and rsi < 40
+        rsi_ok_sell = rsi is not None and rsi > 60
 
         # 底背驰 -> 纯做多信号
         if last_pen.direction == "down":
@@ -1898,7 +2005,7 @@ class ChanStrategy(BaseStrategy):
                     return None
 
                 if not rsi_ok_buy:
-                    logger.info(f"[ChanStrategy] RSI={rsi:.1f}偏高，跳过BUY信号（需RSI<45）")
+                    logger.info(f"[ChanStrategy] RSI={rsi:.1f}偏高，跳过BUY信号（需RSI<40）")
                     return None
 
                 # 原始信号
@@ -1928,14 +2035,6 @@ class ChanStrategy(BaseStrategy):
                         "position": "long"
                     })
 
-                # 记录做多信号信息并启动冷却期
-                self.long_signal_info.update({
-                    "action": "BUY",
-                    "pen_index": len(self.pens) - 1,
-                    "kline_index": current_kline_idx,
-                    "cooldown_counter": self.long_signal_cooldown_bars
-                })
-
                 # ===== 方案4：盈亏比过滤器 =====
                 rr_pass, rr_ratio = self.check_risk_reward_ratio(
                     "BUY",
@@ -1947,8 +2046,17 @@ class ChanStrategy(BaseStrategy):
 
                 signal["risk_reward_ratio"] = rr_ratio
 
-                logger.info(f"[ChanStrategy] 信号: {signal}")
-                return signal
+                logger.info(f"[ChanStrategy] 检测到BUY信号，等待确认K线: {signal}")
+                self.pending_signal = {
+                    "action": base_action,
+                    "reason": signal.get("reason", base_reason),
+                    "stop_loss": signal["stop_loss"],
+                    "position": "long",
+                    "pen_index": len(self.pens) - 1,
+                    "kline_index": current_kline_idx,
+                    "signal": signal
+                }
+                return None
 
         # 顶背驰 -> 纯做空信号（仅严格顶背驰）
         elif last_pen.direction == "up":
@@ -1961,7 +2069,7 @@ class ChanStrategy(BaseStrategy):
                     return None
 
                 if not rsi_ok_sell:
-                    logger.info(f"[ChanStrategy] RSI={rsi:.1f}偏低，跳过SELL信号（需RSI>55）")
+                    logger.info(f"[ChanStrategy] RSI={rsi:.1f}偏低，跳过SELL信号（需RSI>60）")
                     return None
 
                 base_action = "SELL"
@@ -1988,13 +2096,6 @@ class ChanStrategy(BaseStrategy):
                         "position": "short"
                     })
 
-                self.short_signal_info.update({
-                    "action": "SELL",
-                    "pen_index": len(self.pens) - 1,
-                    "kline_index": current_kline_idx,
-                    "cooldown_counter": self.short_signal_cooldown_bars
-                })
-
                 rr_pass, rr_ratio = self.check_risk_reward_ratio(
                     "SELL",
                     last_pen.high,
@@ -2005,8 +2106,17 @@ class ChanStrategy(BaseStrategy):
 
                 signal["risk_reward_ratio"] = rr_ratio
 
-                logger.info(f"[ChanStrategy] 信号: {signal}")
-                return signal
+                logger.info(f"[ChanStrategy] 检测到SELL信号，等待确认K线: {signal}")
+                self.pending_signal = {
+                    "action": base_action,
+                    "reason": signal.get("reason", base_reason),
+                    "stop_loss": signal["stop_loss"],
+                    "position": "short",
+                    "pen_index": len(self.pens) - 1,
+                    "kline_index": current_kline_idx,
+                    "signal": signal
+                }
+                return None
 
         return signal
 
@@ -2037,6 +2147,15 @@ class ChanStrategy(BaseStrategy):
                 "low": self.pens[-1].low if self.pens else None
             }
         }
+
+    def extend_cooldown_after_loss(self, direction: str) -> None:
+        """止损后延长对应方向的冷却期到12根K线"""
+        if direction == "long":
+            self.long_signal_info["cooldown_counter"] = 12
+            logger.info(f"[ChanStrategy] LONG止损，冷却期延长到12根K线")
+        elif direction == "short":
+            self.short_signal_info["cooldown_counter"] = 12
+            logger.info(f"[ChanStrategy] SHORT止损，冷却期延长到12根K线")
 
 
 class ChanStrategyExecutor:
