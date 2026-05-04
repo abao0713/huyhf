@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class BacktestConfig:
     """回测配置"""
     initial_balance: float = 10000.0
-    commission: float = 0.001
+    commission: float = 0.0004  # 交易手续费率0.04%（双向收费），限价单模式下的优惠费率（vs 市价单的0.1%）
     slippage: float = 0.0005
     data_dir: str = "trading_system/data/binance_history"
     max_position_ratio: float = 1.0
@@ -61,6 +61,26 @@ class BacktestConfig:
     trailing_stop_activation: float = 0.04  # 激活追踪止损的盈利比例(4%)【从3%优化至4%】
     trailing_stop_distance: float = 0.025  # 追踪止损距离(2.5%)【从2%优化至2.5%】
     trailing_stop_step: float = 0.015  # 追踪止损步进(1.5%)【从1%优化至1.5%】
+
+    # 限价单配置（新增 - 价格偏差检测）
+    limit_order_enabled: bool = True  # 是否启用限价单模式
+    price_deviation_tolerance: float = 0.001  # 价格偏差容忍度，默认0.1%
+
+    # 资金费用配置（合约交易 - 新增）
+    funding_rate: float = 0.0001  # 默认资金费率0.01%（每4小时结算）
+    enable_funding_fee: bool = True  # 是否启用资金费用计算
+
+
+@dataclass
+class LimitOrder:
+    """限价单数据结构"""
+    timestamp: datetime
+    action: Literal["BUY", "SELL"]
+    limit_price: float  # 期望成交价格
+    amount: float
+    deviation_tolerance: float = 0.001  # 偏差容忍度
+    status: str = "pending"  # pending, filled, cancelled
+    reason: str = ""
 
 
 @dataclass
@@ -93,6 +113,96 @@ class ClosedTrade:
     holding_hours: float
     stop_loss_hit: bool = False
     take_profit_hit: bool = False
+
+
+class FundingFeeCalculator:
+    """
+    资金费用计算器
+
+    合约交易每4小时结算一次资金费用（UTC时间：0:00, 4:00, 8:00, 12:00, 16:00, 20:00）
+    多头持仓：费率为正时支付费用，费率为负时收取费用
+    空头持仓：费率为正时收取费用，费率为负时支付费用
+    """
+
+    FUNDING_SETTLEMENT_HOURS = [0, 4, 8, 12, 16, 20]  # UTC结算时间点
+
+    def __init__(self):
+        self.last_settlement_time = None
+        self.total_funding_fee_paid = 0.0  # 累计支付的资金费用
+        self.total_funding_fee_received = 0.0  # 累计收到的资金费用
+        self.funding_records: List[Dict] = []  # 资金费用记录
+
+    def check_settlement(self, current_time: datetime, position: float,
+                        position_value: float, funding_rate: float = 0.0001) -> float:
+        """
+        检查是否需要结算资金费用
+
+        Args:
+            current_time: 当前时间
+            position: 当前持仓数量（正数=多头，负数=空头）
+            position_value: 持仓价值（绝对值）
+            funding_rate: 当前资金费率（默认0.01%）
+
+        Returns:
+            本次结算的资金费用（正数=收到，负数=支付）
+        """
+        if position == 0:
+            return 0.0
+
+        current_hour = current_time.hour
+
+        # 检查是否到达结算时间点且距离上次结算已过足够时间
+        if current_hour not in self.FUNDING_SETTLEMENT_HOURS:
+            return 0.0
+
+        if (self.last_settlement_time and
+            (current_time - self.last_settlement_time).total_seconds() < 3600):
+            return 0.0
+
+        # 计算资金费用
+        # 公式：资金费用 = 持仓价值 * 费率 * (持仓方向)
+        # 多头：费率>0时支付（负值），费率<0时收取（正值）
+        # 空头：与多头相反
+        if position > 0:  # 多头
+            fee = -position_value * funding_rate  # 支付费用
+        else:  # 空头
+            fee = position_value * funding_rate  # 收取费用（空头与多头相反）
+
+        # 更新累计值
+        if fee < 0:
+            self.total_funding_fee_paid += abs(fee)
+        else:
+            self.total_funding_fee_received += fee
+
+        # 记录本次结算
+        record = {
+            "timestamp": current_time,
+            "position": position,
+            "position_value": position_value,
+            "funding_rate": funding_rate,
+            "fee": fee,
+            "cumulative_paid": self.total_funding_fee_paid,
+            "cumulative_received": self.total_funding_fee_received
+        }
+        self.funding_records.append(record)
+        self.last_settlement_time = current_time
+
+        logger.info(
+            f"[FundingFee] 结算资金费用: {fee:.4f} USDT "
+            f"(持仓:{position:.4f}, 价值:${position_value:.2f}, 费率:{funding_rate*100:.4f}%)"
+        )
+
+        return fee
+
+    def get_summary(self) -> Dict:
+        """获取资金费用汇总"""
+        return {
+            "total_paid": self.total_funding_fee_paid,
+            "total_received": self.total_funding_fee_received,
+            "net_fee": self.total_funding_fee_received - self.total_funding_fee_paid,
+            "settlement_count": len(self.funding_records),
+            "records": self.funding_records
+        }
 
 
 class BacktestEngine:
@@ -136,6 +246,7 @@ class BacktestEngine:
             )
         self.data_dir = Path(self.config.data_dir)
         self.data_manager = BacktestDataManager(str(self.data_dir))
+        self.funding_calculator = FundingFeeCalculator()
         self._reset_state()
 
     def _reset_state(self) -> None:
@@ -162,6 +273,13 @@ class BacktestEngine:
         self.highest_price_since_entry: float = 0.0  # 入场后最高价（多单用）
         self.lowest_price_since_entry: float = float('inf')  # 入场后最低价（空单用）
         self.is_trailing_stop_active: bool = False  # 追踪止损是否激活
+
+        # 限价单统计（新增）
+        self.cancelled_orders_count: int = 0  # 被取消的订单数量
+        self.limit_orders: List[LimitOrder] = []  # 限价单记录列表
+
+        # 资金费用计算器（重置）
+        self.funding_calculator = FundingFeeCalculator()
 
     def load_data(
             self,
@@ -383,6 +501,12 @@ class BacktestEngine:
             if signal and signal.get("action") != "HOLD":
                 self._execute_trade(signal, kline)
 
+            # 结算资金费用（合约交易）
+            if self.config.enable_funding_fee and self.position != 0:
+                funding_fee = self._settle_funding_fee(kline)
+                if funding_fee != 0:
+                    self.balance += funding_fee  # 调整账户余额
+
             # 记录权益
             self._record_equity(kline)
 
@@ -390,6 +514,45 @@ class BacktestEngine:
             if i % 1000 == 0:
                 import gc
                 gc.collect()
+
+    def _settle_funding_fee(self, kline) -> float:
+        """
+        结算资金费用（合约交易）
+
+        在每根K线处理时检查是否到达结算时间点，
+        如果是则计算并结算资金费用
+
+        Args:
+            kline: 当前K线数据
+
+        Returns:
+            本次结算的资金费用（正数=收到，负数=支付，0=无需结算）
+        """
+        try:
+            # 获取当前时间和价格
+            if hasattr(kline, 'close'):
+                current_price = float(kline.close)
+                current_time = kline.open_time
+            else:
+                current_price = float(kline["close"])
+                current_time = kline["open_time"]
+
+            # 计算持仓价值
+            position_value = abs(self.position * current_price)
+
+            # 检查并结算资金费用
+            funding_fee = self.funding_calculator.check_settlement(
+                current_time=current_time,
+                position=self.position,
+                position_value=position_value,
+                funding_rate=self.config.funding_rate
+            )
+
+            return funding_fee
+
+        except Exception as e:
+            logger.warning(f"[BacktestEngine] 资金费用结算失败: {e}")
+            return 0.0
 
     def _calculate_current_atr(self, strategy) -> None:
         """
@@ -602,24 +765,25 @@ class BacktestEngine:
                         )
 
             elif self.position < 0:  # 空单
-                # 更新最低价
+                # ✅ 空单正确逻辑：价格下跌 = 盈利增加
+                # 应该在价格创新低时下移止损位来锁定利润
                 if current_price < self.lowest_price_since_entry:
                     self.lowest_price_since_entry = current_price
 
-                    # 计算新的追踪止损位（只在价格下跌时下移）
+                    # 计算新的追踪止损位（在最低价上方一定距离）
                     new_trailing_stop = self.lowest_price_since_entry * (
                         1 + self.config.trailing_stop_distance
                     )
 
-                    # 只向下移动止损
+                    # 对于空单：只向下移动止损（跟随价格下跌，锁定利润）
                     if new_trailing_stop < self.trailing_stop_price:
                         old_stop = self.trailing_stop_price
                         self.trailing_stop_price = new_trailing_stop
 
                         logger.debug(
-                            f"[BacktestEngine] 追踪止损下移: "
+                            f"[BacktestEngine] 空单追踪止损下移(锁利): "
                             f"{old_stop:.2f} → {new_trailing_stop:.2f} "
-                            f"(最低价={current_price:.2f})"
+                            f"(最低价={current_price:.2f}, 盈利中)"
                         )
 
     def _check_advanced_stop_loss(self, kline) -> None:
@@ -634,7 +798,7 @@ class BacktestEngine:
         Args:
             kline: 当前K线数据
         """
-        if self.position <= 0 or self.avg_price <= 0:
+        if self.position == 0 or self.avg_price <= 0:
             return
 
         # 获取当前价格
@@ -645,7 +809,7 @@ class BacktestEngine:
             current_price = float(kline["close"])
             open_time = kline["open_time"]
 
-        # 更新追踪止损
+        # 更新追踪止损（支持多空双向）
         self._update_trailing_stop(current_price)
 
         # 确定当前有效的止损价
@@ -675,13 +839,66 @@ class BacktestEngine:
                     f"当前价={current_price:.2f} >= 止损价={effective_stop_loss:.2f}"
                 )
 
-        # 执行止损平仓
+        # 执行止损/止盈平仓 + 反向开仓（连续循环交易）
         if stop_loss_triggered:
-            self._sell_with_reason(
-                open_time,
-                current_price,
-                f"{stop_loss_reason} (高级止损)"
-            )
+            # 判断实际是止损还是止盈
+            if self.position > 0:  # 多单持仓
+                profit_pct = (current_price - self.avg_price) / self.avg_price
+                if profit_pct > 0:
+                    stop_loss_reason = "止盈 (追踪止损锁定利润)"  # 盈利>0为止盈
+                else:
+                    stop_loss_reason = "止损 (ATR止损)"  # 亏损<0为止损
+
+                logger.info(
+                    f"[BacktestEngine] {'✅止盈' if profit_pct > 0 else '🛑止损'}: "
+                    f"多单盈亏={profit_pct*100:+.2f}%, "
+                    f"开仓价={self.avg_price:.2f} -> 当前价={current_price:.2f}"
+                )
+
+                # 平多单
+                self._sell_with_reason(
+                    open_time,
+                    current_price,
+                    f"{stop_loss_reason}"
+                )
+
+                # 连续循环交易：平多后立即开空单
+                logger.info(f"[BacktestEngine] 🔄 连续循环：平多后立即开空单")
+                self._open_short_position(
+                    open_time,
+                    current_price,
+                    self.config.investment_ratio,
+                    self.config.leverage
+                )
+
+            elif self.position < 0:  # 空单持仓
+                profit_pct = (self.avg_price - current_price) / self.avg_price
+                if profit_pct > 0:
+                    stop_loss_reason = "止盈 (追踪止损锁定利润)"  # 盈利>0为止盈
+                else:
+                    stop_loss_reason = "止损 (ATR止损)"  # 亏损<0为止损
+
+                logger.info(
+                    f"[BacktestEngine] {'✅止盈' if profit_pct > 0 else '🛑止损'}: "
+                    f"空单盈亏={profit_pct*100:+.2f}%, "
+                    f"开仓价={self.avg_price:.2f} -> 当前价={current_price:.2f}"
+                )
+
+                # 平空单（使用_close_short_position正确计算盈亏）
+                self._close_short_position(
+                    open_time,
+                    current_price,
+                    f"{stop_loss_reason}"
+                )
+
+                # 连续循环交易：平空后立即开多单
+                logger.info(f"[BacktestEngine] 🔄 连续循环：平空后立即开多单")
+                self._open_long_position(
+                    open_time,
+                    current_price,
+                    self.config.investment_ratio,
+                    self.config.leverage
+                )
 
     def _check_stop_loss_take_profit(self, kline) -> None:
         """
@@ -755,6 +972,48 @@ class BacktestEngine:
             open_time = kline["open_time"]
         reason = signal.get("reason", "")
 
+        # ===== 限价单价格偏差检测（新增）=====
+        if self.config.limit_order_enabled:
+            target_price = signal.get("target_price")
+            if target_price and target_price > 0:
+                # 计算价格偏差
+                deviation = abs(market_price - target_price) / target_price
+
+                if deviation > self.config.price_deviation_tolerance:
+                    # 价格偏差超过容忍度，取消交易
+                    cancel_reason = (
+                        f"限价单取消: 市场价{market_price:.2f} vs 目标价{target_price:.2f}, "
+                        f"偏差={deviation*100:.3}% > 容忍度{self.config.price_deviation_tolerance*100:.1f}%"
+                    )
+                    logger.warning(f"[BacktestEngine] 🚫 {cancel_reason}")
+
+                    # 记录被取消的订单
+                    cancelled_order = LimitOrder(
+                        timestamp=open_time,
+                        action=action,
+                        limit_price=target_price,
+                        amount=0,
+                        deviation_tolerance=self.config.price_deviation_tolerance,
+                        status="cancelled",
+                        reason=cancel_reason
+                    )
+                    self.limit_orders.append(cancelled_order)
+                    self.cancelled_orders_count += 1
+
+                    return  # 取消交易，不执行任何操作
+
+                # 价格偏差在可接受范围内，使用较优价格
+                if action == "BUY":
+                    exec_price = min(market_price, target_price)
+                else:  # SELL
+                    exec_price = max(market_price, target_price)
+
+                logger.info(
+                    f"[BacktestEngine] ✅ 限价单通过: "
+                    f"市场价={market_price:.2f}, 目标价={target_price:.2f}, "
+                    f"偏差={deviation*100:.3}%, 使用成交价={exec_price:.2f}"
+                )
+
         # 验证信号有效性
         if not self._validate_signal(action, signal):
             return
@@ -775,17 +1034,17 @@ class BacktestEngine:
             # 底背驰信号：先检查是否有空单持仓
             
             if self.position < 0:
-                # 有空单 -> 先平仓空单
+                # 有空单 -> 先平仓空单（正确计算盈亏）
                 short_qty = abs(self.position)
                 exec_price = market_price * (1 + self.config.slippage)
                 close_reason = f"{reason} 平空"
-                
-                logger.info(f"[BacktestEngine] 检测到空单持仓 {short_qty:.4f}，执行平仓")
-                self._sell_with_reason(
-                    open_time,
-                    exec_price,
-                    close_reason
+
+                logger.info(
+                    f"[BacktestEngine] 检测到空单持仓 {short_qty:.4f}，"
+                    f"开空价={self.avg_price:.2f}, 当前价={market_price:.2f}, "
+                    f"浮动盈亏={((self.avg_price-exec_price)/self.avg_price*100):+.2f}%, 执行平仓"
                 )
+                self._close_short_position(open_time, exec_price, close_reason)
                 logger.info(f"[BacktestEngine] 已平仓空单: {short_qty:.4f} @ {exec_price:.2f}")
 
             # 根据共振级别动态调整仓位比例（方案5：使用凯利公式优化）
@@ -807,18 +1066,31 @@ class BacktestEngine:
             )
 
             # 计算数量（考虑杠杆）
-            exec_price = market_price * (1 + self.config.slippage)
-            quantity = (actual_amount * leverage) / exec_price
+            # 如果限价单已确定成交价格，使用该价格加滑点；否则使用市场价格
+            if 'exec_price' in locals() and exec_price > 0:
+                # 限价单模式：已确定的成交价格基础上考虑滑点
+                if action == "BUY":
+                    final_exec_price = exec_price * (1 + self.config.slippage)
+                else:
+                    final_exec_price = exec_price * (1 - self.config.slippage)
+            else:
+                # 市价单模式
+                if action == "BUY":
+                    final_exec_price = market_price * (1 + self.config.slippage)
+                else:
+                    final_exec_price = market_price * (1 - self.config.slippage)
+
+            quantity = (actual_amount * leverage) / final_exec_price
 
             # 计算止损价格（多单止损 = 爆仓价格 * long_stop_loss_multiplier）
             # 爆仓价格公式：对于多头合约，爆仓价 ≈ 开仓价 * (1 - 1/杠杆)
-            liquidation_price = exec_price * (1 - 1/leverage)
+            liquidation_price = final_exec_price * (1 - 1/leverage)
             stop_loss_price = liquidation_price * self.config.long_stop_loss_multiplier
 
             # 开多单
             self._buy_with_reason(
                 open_time,
-                exec_price,
+                final_exec_price,
                 actual_amount,
                 reason
             )
@@ -829,13 +1101,13 @@ class BacktestEngine:
                 f"共振级别:{signal.get('resonance_level', 'unknown')}, "
                 f"杠杆{leverage}x, "
                 f"数量{quantity:.4f}, "
-                f"开仓价{exec_price:.2f}, "
+                f"开仓价{final_exec_price:.2f}, "
                 f"爆仓价{liquidation_price:.2f}, "
                 f"止损价{stop_loss_price:.2f} (爆仓价×{self.config.long_stop_loss_multiplier:.0f}%)"
             )
 
             # 初始化高级止损（ATR + 追踪止损）
-            self._initialize_stop_loss(exec_price, "long")
+            self._initialize_stop_loss(final_exec_price, "long")
 
         elif action == "SELL":
             # ===== 方案1：禁止逆势加仓（消除马丁格尔陷阱）=====
@@ -881,18 +1153,33 @@ class BacktestEngine:
             )
 
             # 计算数量（考虑杠杆）
-            exec_price = market_price * (1 - self.config.slippage)
-            quantity = (actual_amount * leverage) / exec_price
+            # 如果限价单已确定成交价格，使用该价格加滑点；否则使用市场价格
+            if 'exec_price' in locals() and exec_price > 0:
+                # 限价单模式：已确定的成交价格基础上考虑滑点
+                if action == "BUY":
+                    final_exec_price = exec_price * (1 + self.config.slippage)
+                else:
+                    final_exec_price = exec_price * (1 - self.config.slippage)
+            else:
+                # 市价单模式
+                if action == "BUY":
+                    final_exec_price = market_price * (1 + self.config.slippage)
+                else:
+                    final_exec_price = market_price * (1 - self.config.slippage)
+
+            quantity = (actual_amount * leverage) / final_exec_price
 
             # 计算止损价格（空单止损 = 爆仓价格 * short_stop_loss_multiplier）
             # 爆仓价格公式：对于空头合约，爆仓价 ≈ 开仓价 * (1 + 1/杠杆)
-            liquidation_price = exec_price * (1 + 1/leverage)
+            liquidation_price = final_exec_price * (1 + 1/leverage)
             stop_loss_price = liquidation_price * self.config.short_stop_loss_multiplier
 
-            # 开空单（模拟：记录为负持仓）
-            self._sell_with_reason(
+            # 开空单（_open_short_position内部会处理滑点，传原始市价）
+            self._open_short_position(
                 open_time,
-                exec_price,
+                market_price,
+                self.config.investment_ratio,
+                self.config.leverage,
                 reason
             )
             logger.info(
@@ -902,13 +1189,13 @@ class BacktestEngine:
                 f"共振级别:{signal.get('resonance_level', 'unknown')}, "
                 f"杠杆{leverage}x, "
                 f"数量{quantity:.4f}, "
-                f"开仓价{exec_price:.2f}, "
+                f"开仓价{final_exec_price:.2f}, "
                 f"爆仓价{liquidation_price:.2f}, "
                 f"止损价{stop_loss_price:.2f} (爆仓价×{self.config.short_stop_loss_multiplier:.0f}%)"
             )
 
             # 初始化高级止损（ATR + 追踪止损）
-            self._initialize_stop_loss(exec_price, "short")
+            self._initialize_stop_loss(final_exec_price, "short")
 
     def _validate_signal(self, action: str, signal: Dict[str, Any]) -> bool:
         """
@@ -936,6 +1223,129 @@ class BacktestEngine:
         
         # 可以添加其他验证逻辑
         return True
+
+    def _open_long_position(
+            self,
+            timestamp: datetime,
+            price: float,
+            investment_ratio: float,
+            leverage: int,
+            reason: str = "反向开多"
+    ) -> None:
+        """
+        开多单（用于连续循环交易的反向开仓）
+
+        Args:
+            timestamp: 时间戳
+            price: 成交价格
+            investment_ratio: 投入比例
+            leverage: 杠杆倍数
+            reason: 开仓原因
+        """
+        # 考虑滑点
+        exec_price = price * (1 + self.config.slippage)
+
+        # 计算投入金额和数量（使用与主交易逻辑一致的计算方式）
+        base_amount = self.balance * investment_ratio
+
+        # 应用默认的仓位调整因子（与_execute_trade保持一致）
+        position_size_ratio = 0.7 * 0.5  # 共振系数0.7 × 凯利系数0.5 ≈ 0.35
+        actual_amount = base_amount * position_size_ratio
+
+        if actual_amount <= 0 or self.balance < actual_amount:
+            logger.warning(f"[BacktestEngine] 余额不足，无法开多单 (余额={self.balance:.2f}, 需要={actual_amount:.2f})")
+            return
+
+        quantity = (actual_amount * leverage) / exec_price
+
+        # 计算止损价格
+        liquidation_price = exec_price * (1 - 1/leverage)
+        stop_loss_price = liquidation_price * self.config.long_stop_loss_multiplier
+
+        # 执行买入
+        self._buy_with_reason(
+            timestamp,
+            exec_price,
+            actual_amount,
+            reason
+        )
+
+        logger.info(
+            f"[BacktestEngine] 反向开多单成功: "
+            f"投入${actual_amount:.2f}, 杠杆{leverage}x, "
+            f"数量{quantity:.4f}, 价{exec_price:.2f}, "
+            f"止损{stop_loss_price:.2f}"
+        )
+
+        # 初始化追踪止损
+        self._initialize_stop_loss(exec_price, "long")
+
+    def _open_short_position(
+            self,
+            timestamp: datetime,
+            price: float,
+            investment_ratio: float,
+            leverage: int,
+            reason: str = "反向开空"
+    ) -> None:
+        """
+        开空单（用于连续循环交易的反向开仓）
+
+        Args:
+            timestamp: 时间戳
+            price: 成交价格
+            investment_ratio: 投入比例
+            leverage: 杠杆倍数
+            reason: 开仓原因
+        """
+        # 考虑滑点（做空时价格向下）
+        exec_price = price * (1 - self.config.slippage)
+
+        # 计算投入金额和数量（使用与主交易逻辑一致的计算方式）
+        base_amount = self.balance * investment_ratio
+
+        # 应用默认的仓位调整因子（与_execute_trade保持一致）
+        position_size_ratio = 0.7 * 0.5  # 共振系数0.7 × 凯利系数0.5 ≈ 0.35
+        actual_amount = base_amount * position_size_ratio
+
+        if actual_amount <= 0 or self.balance < actual_amount:
+            logger.warning(f"[BacktestEngine] 余额不足，无法开空单 (余额={self.balance:.2f}, 需要={actual_amount:.2f})")
+            return
+
+        # 执行开空操作（直接修改状态，不调用_sell_with_reason避免检查）
+        sell_amount = actual_amount / exec_price * (1 - self.config.commission)
+
+        # 计算止损价格
+        liquidation_price = exec_price * (1 + 1/leverage)
+        stop_loss_price = liquidation_price * self.config.short_stop_loss_multiplier
+
+        # 记录交易（空单用负数表示）
+        trade = TradeRecord(
+            timestamp=timestamp,
+            action="SELL",  # 开空也记录为SELL
+            price=exec_price,
+            amount=sell_amount,
+            balance=self.balance - actual_amount,
+            position=-sell_amount,  # 负数表示空单
+            equity=self.balance - actual_amount + (-sell_amount) * exec_price,
+            reason=reason
+        )
+
+        # 更新状态
+        self.position = -sell_amount  # 设置为负数表示空单
+        self.avg_price = exec_price
+        self.balance -= actual_amount
+        self.trades.append(trade)
+
+        logger.info(
+            f"[BacktestEngine] 反向开空单成功: "
+            f"投入${actual_amount:.2f}, 杠杆{leverage}x, "
+            f"数量{sell_amount:.4f}, "
+            f"价{exec_price:.2f}, 止损{stop_loss_price:.2f}"
+        )
+
+        # 初始化追踪止损
+        self._initialize_stop_loss(exec_price, "short")
 
     def _buy_with_reason(
             self,
@@ -985,6 +1395,72 @@ class BacktestEngine:
         self.trades.append(trade)
 
         logger.info("买入 %.4f @ %.2f, 原因: %s", buy_amount, price, reason)
+
+    def _close_short_position(
+            self,
+            timestamp: datetime,
+            price: float,
+            reason: str
+    ) -> Optional[TradeRecord]:
+        """
+        平空单（买入平仓），正确计算空单盈亏
+
+        空单盈亏公式:
+          cost = |position| * avg_price  （开空时"借入"的价值）
+          proceeds = |position| * price   （平空时"还回"的价值）
+          profit = cost - proceeds        （正数=盈利，负数=亏损）
+          profit_pct = (avg_price - price) / avg_price * 100
+
+        Args:
+            timestamp: 时间戳
+            price: 平仓价格
+            reason: 平仓原因
+
+        Returns:
+            TradeRecord 或 None（如果无空单可平）
+        """
+        if self.position >= 0 or price <= 0:
+            return None
+
+        abs_qty = abs(self.position)
+        proceeds = abs_qty * price * (1 - self.config.commission)  # 买入平仓还回价值
+        cost = abs_qty * self.avg_price  # 开空时借入价值
+        profit = cost - proceeds  # 正数=盈利(价格跌了)，负数=亏损(价格涨了)
+        profit_pct = ((self.avg_price - price) / self.avg_price * 100) if self.avg_price > 0 else 0.0
+
+        # 更新连续亏损记录
+        if profit < 0:
+            self.consecutive_losses += 1
+            self.max_consecutive_losses = max(
+                self.max_consecutive_losses, self.consecutive_losses
+            )
+        else:
+            self.consecutive_losses = 0
+
+        trade = TradeRecord(
+            timestamp=timestamp,
+            action="BUY",  # 平空 = 买入
+            price=price,
+            amount=abs_qty,
+            balance=self.balance + proceeds,
+            position=0.0,
+            equity=self.balance + proceeds,
+            profit=profit,
+            profit_pct=profit_pct,
+            reason=reason
+        )
+
+        self.balance += proceeds
+        self.position = 0.0
+        self.avg_price = 0.0
+        self.trades.append(trade)
+
+        logger.info(
+            f"[BacktestEngine] 平空单: {abs_qty:.4f} @ {price:.2f}, "
+            f"利润: {profit:+.2f} ({profit_pct:+.2f}%), 原因: {reason}"
+        )
+
+        return trade
 
     def _sell_with_reason(self, timestamp: datetime, price: float, reason: str) -> None:
         """
@@ -1054,7 +1530,16 @@ class BacktestEngine:
             current_price = float(kline.close)
         else:
             current_price = float(kline["close"])
-        position_value = self.position * current_price if self.position > 0 else 0.0
+
+        # 计算持仓价值（支持多空双向）
+        if self.position > 0:  # 多头持仓
+            position_value = self.position * current_price
+        elif self.position < 0:  # 空头持仓
+            # 空头浮动盈亏 = (开仓价 - 当前价) × 数量
+            position_value = (self.avg_price - current_price) * abs(self.position)
+        else:  # 无持仓
+            position_value = 0.0
+
         equity = self.balance + position_value
 
         # 记录时间戳和权益
@@ -1191,12 +1676,28 @@ class BacktestEngine:
             "avg_holding_hours": avg_holding_hours,
             "sharpe_ratio": sharpe_ratio,
             "max_consecutive_losses": self.max_consecutive_losses,
+
+            # 限价单统计（新增）
+            "cancelled_orders_count": self.cancelled_orders_count,
+            "limit_order_enabled": self.config.limit_order_enabled,
+            "price_deviation_tolerance": self.config.price_deviation_tolerance,
+
             "final_balance": self.balance,
             "final_position": self.position,
             "avg_position_price": self.avg_price,
             "timestamps": self.timestamps,
             "equity_curve": self.equity_curve,
         }
+
+        # 添加资金费用汇总（如果启用）
+        if self.config.enable_funding_fee:
+            funding_summary = self.funding_calculator.get_summary()
+            results["funding_fee_summary"] = {
+                "total_paid": funding_summary["total_paid"],
+                "total_received": funding_summary["total_received"],
+                "net_fee": funding_summary["net_fee"],
+                "settlement_count": funding_summary["settlement_count"]
+            }
 
         # 验证结果
         if not self._validate_results(results):
@@ -1430,6 +1931,29 @@ class BacktestEngine:
         if results.get('final_position', 0) > 0:
             print(f"   持仓均价: ${results.get('avg_position_price', 0):.2f}")
 
+        # 打印限价单统计（如果启用）
+        if results.get('limit_order_enabled', False):
+            print(f"\n🎯 限价单统计:")
+            print(f"   限价单模式: {'已启用' if results.get('limit_order_enabled') else '未启用'}")
+            print(f"   价格偏差容忍度: {results.get('price_deviation_tolerance', 0)*100:.2f}%")
+            print(f"   被取消的订单数: {results.get('cancelled_orders_count', 0)}")
+            cancellation_rate = (
+                results.get('cancelled_orders_count', 0) /
+                (results.get('total_trades', 0) + results.get('cancelled_orders_count', 0)) * 100
+                if (results.get('total_trades', 0) + results.get('cancelled_orders_count', 0)) > 0
+                else 0
+            )
+            print(f"   订单取消率: {cancellation_rate:.2f}%")
+
+        # 打印资金费用汇总（如果启用）
+        if "funding_fee_summary" in results:
+            funding = results["funding_fee_summary"]
+            print(f"\n💸 资金费用（合约交易）:")
+            print(f"   累计支付: ${funding.get('total_paid', 0):.4f} USDT")
+            print(f"   累计收取: ${funding.get('total_received', 0):.4f} USDT")
+            print(f"   净费用: ${funding.get('net_fee', 0):.4f} USDT")
+            print(f"   结算次数: {funding.get('settlement_count', 0)} 次")
+
         print("\n" + "=" * 60)
 
 
@@ -1440,7 +1964,6 @@ def main():
     # 创建配置
     config = BacktestConfig(
         initial_balance=10000.0,
-        commission=0.001,
         slippage=0.0005,
         max_position_ratio=0.5,  # 每次最多使用50%资金
         stop_loss_pct=0.05,  # 5%止损

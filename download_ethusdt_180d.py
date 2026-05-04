@@ -5,7 +5,7 @@ import pandas as pd
 import os
 
 
-def get_date_range(days=180):
+def get_date_range(days=60):
     """获取日期范围"""
     today = datetime.now()
     end_date = today.strftime("%Y-%m-%d")
@@ -14,7 +14,7 @@ def get_date_range(days=180):
 
 
 async def download_ethusdt_180d():
-    """使用分批下载功能获取ETHUSDT 180天K线数据"""
+    """使用分批下载功能获取ETHUSDT 60天K线数据"""
 
     # start_date = "2026-03-04"
     # end_date = "2026-05-03"

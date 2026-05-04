@@ -208,6 +208,10 @@ class ChanStrategy(BaseStrategy):
         self.ma_medium: pd.Series = pd.Series()     # 中期均线（SMA60）
         self.ma_long: pd.Series = pd.Series()       # 长期均线（SMA120）
 
+        # EMA趋势判断指标 (替代日线趋势)
+        self.ema_fast: pd.Series = pd.Series()       # EMA快速线（EMA20）
+        self.ema_slow: pd.Series = pd.Series()       # EMA慢速线（EMA60）
+
         # Binance客户端（可选）
         self.binance_client: Optional[BinanceRestClient] = None
 
@@ -218,7 +222,9 @@ class ChanStrategy(BaseStrategy):
             "kline_index": -1,        # 上次触发信号的K线索引
             "cooldown_counter": 0     # 冷却期计数器
         }
-        self.signal_cooldown_bars = 10  # 冷却期：同类型信号至少间隔N根K线（30m周期=5小时）
+        self.signal_cooldown_bars = 5  # 冷却期：同类型信号至少间隔N根K线（优化：10→5=2.5小时）
+        self._trend_position_mult: float = 1.0  # EMA趋势仓位系数（方案A：分级过滤）
+        self._time_position_mult: float = 1.0   # 时间仓位系数（方案B：亚盘降仓）
 
     async def initialize(self, symbol: str) -> bool:
         """
@@ -559,6 +565,92 @@ class ChanStrategy(BaseStrategy):
         else:
             logger.warning(f"[ChanStrategy] 数据长度({len(close)})不足，无法计算长期均线(SMA{self.ma_long_period})")
             self.ma_long = pd.Series()
+
+        # ===== 计算 EMA 趋势判断指标 (EMA20/EMA60) =====
+        self._calculate_ema_trend_indicators(close)
+
+    def _calculate_ema_trend_indicators(self, close: pd.Series) -> None:
+        """
+        计算 EMA 趋势判断指标 (EMA20 和 EMA60)
+        
+        用于替代日线趋势判断，使用双均线系统识别趋势方向：
+        
+        趋势判断规则：
+        - 多头趋势：EMA20 > EMA60 且 价格 > EMA20
+        - 空头趋势：EMA20 < EMA60 且 价格 < EMA20
+        - 震荡市：其他情况（均线粘合或价格在两均线之间）
+        
+        Args:
+            close: 收盘价序列
+        """
+        try:
+            from ..utils.indicators import calculate_ema
+            
+            ema_fast_period = 20  # EMA快速线周期
+            ema_slow_period = 60  # EMA慢速线周期
+            
+            # 计算 EMA20 (快速线)
+            if len(close) >= ema_fast_period:
+                self.ema_fast = calculate_ema(close, ema_fast_period)
+                logger.debug(f"[ChanStrategy] EMA{ema_fast_period}: {self.ema_fast.iloc[-1]:.2f}")
+            else:
+                self.ema_fast = pd.Series()
+                logger.debug(f"[ChanStrategy] 数据不足，无法计算EMA{ema_fast_period}")
+            
+            # 计算 EMA60 (慢速线)
+            if len(close) >= ema_slow_period:
+                self.ema_slow = calculate_ema(close, ema_slow_period)
+                logger.debug(f"[ChanStrategy] EMA{ema_slow_period}: {self.ema_slow.iloc[-1]:.2f}")
+            else:
+                self.ema_slow = pd.Series()
+                logger.debug(f"[ChanStrategy] 数据不足，无法计算EMA{ema_slow_period}")
+                
+        except Exception as e:
+            logger.warning(f"[ChanStrategy] EMA趋势指标计算失败: {e}")
+            self.ema_fast = pd.Series()
+            self.ema_slow = pd.Series()
+
+    def _get_ema_trend(self) -> str:
+        """
+        获取当前 EMA 趋势状态
+        
+        使用 EMA20/EMA60 双均线系统判断趋势：
+        
+        Returns:
+            str: 趋势状态
+                - "bullish": 多头趋势 (EMA20 > EMA60 且 价格 > EMA20)
+                - "bearish": 空头趋势 (EMA20 < EMA60 且 价格 < EMA20)
+                - "neutral": 震荡/未知 (其他情况)
+        """
+        try:
+            if len(self.ema_fast) < 1 or len(self.ema_slow) < 1:
+                return "neutral"
+            
+            if self.df_processed.empty:
+                return "neutral"
+            
+            ema_fast_val = self.ema_fast.iloc[-1]
+            ema_slow_val = self.ema_slow.iloc[-1]
+            current_price = self.df_processed["close"].iloc[-1]
+            
+            if pd.isna(ema_fast_val) or pd.isna(ema_slow_val):
+                return "neutral"
+            
+            # 多头趋势: EMA20 > EMA60 且 价格在 EMA20 之上
+            if ema_fast_val > ema_slow_val and current_price > ema_fast_val:
+                return "bullish"
+            
+            # 空头趋势: EMA20 < EMA60 且 价格在 EMA20 之下
+            elif ema_fast_val < ema_slow_val and current_price < ema_fast_val:
+                return "bearish"
+            
+            # 其他情况: 震荡市
+            else:
+                return "neutral"
+                
+        except Exception as e:
+            logger.warning(f"[ChanStrategy] EMA趋势判断失败: {e}")
+            return "neutral"
 
     def _check_ma_support(self, price: float, ma_price: Optional[float], tolerance: float = 0.005) -> Optional[str]:
         """
@@ -1135,9 +1227,18 @@ class ChanStrategy(BaseStrategy):
         current_area = current_pen.macd_area
         prev_area = prev_pen.macd_area
 
-        # 底背驰判断：价格创新低但MACD面积缩小
-        if current_low < prev_low and current_area > prev_area:
-            return True
+        # 底背驰判断：价格创新低但MACD面积未明显缩小（>=前面积的90%）
+        if current_low < prev_low:
+            if prev_area != 0:
+                ratio = current_area / prev_area
+                logger.info(f"底背驰检测: 当前低点={current_low}, 前低点={prev_low}, "
+                           f"当前MACD面积={current_area:.4f}, 前MACD面积={prev_area:.4f}, "
+                           f"比值={ratio:.4f}, 阈值=0.9")
+                if current_area >= prev_area * 0.9:
+                    return True
+            else:
+                if current_area >= 0:
+                    return True
 
         return False
 
@@ -1187,9 +1288,18 @@ class ChanStrategy(BaseStrategy):
         current_area = current_pen.macd_area
         prev_area = prev_pen.macd_area
 
-        # 顶背驰判断：价格创新高但MACD面积缩小
-        if current_high > prev_high and current_area < prev_area:
-            return True
+        # 顶背驰判断：价格创新高且MACD面积明显缩小（<前面积的90%）
+        if current_high > prev_high:
+            if prev_area != 0:
+                ratio = current_area / prev_area
+                logger.info(f"顶背驰检测: 当前高点={current_high}, 前高点={prev_high}, "
+                           f"当前MACD面积={current_area:.4f}, 前MACD面积={prev_area:.4f}, "
+                           f"比值={ratio:.4f}, 阈值=0.9")
+                if current_area < prev_area * 0.9:
+                    return True
+            else:
+                if current_area < 0:
+                    return True
 
         return False
 
@@ -1350,14 +1460,131 @@ class ChanStrategy(BaseStrategy):
             logger.warning(f"[ChanStrategy] 日线趋势判断失败: {e}")
             return "unknown"
 
+    def _get_trend_filter_result(self, action: str) -> float:
+        """
+        根据 EMA 趋势返回仓位系数（替代旧的二元过滤）
+
+        使用 EMA20/EMA60 双均线系统识别趋势方向和强度：
+
+        返回:
+          0.0  = 完全拒绝信号（强逆势，风险不可控）
+          1.0  = 不受影响（顺势/震荡）
+          0.3~0.7 = 降仓通过（轻逆势，减仓控制风险）
+
+        趋势判断标准：
+        - 多头趋势：EMA20 > EMA60 且 价格 > EMA20
+        - 空头趋势：EMA20 < EMA60 且 价格 < EMA20
+        - 震荡市：其他情况
+
+        分级逻辑：
+        - 震荡市: 1.0（允许双向）
+        - 顺势: 1.0（完全仓位）
+        - 轻逆势: 0.5（价格仍在均线附近，背离不大）
+        - 强逆势: 0.0（均线斜率陡峭，逆势风险极高）
+        """
+        ema_trend = self._get_ema_trend()
+
+        # 震荡市或未知状态：完全允许
+        if ema_trend in ("neutral", "unknown"):
+            return 1.0
+
+        # 计算趋势强度（用于分级）
+        trend_strength = self._calculate_trend_strength()
+
+        # 空头趋势 + BUY信号
+        if ema_trend == "bearish" and action == "BUY":
+            if trend_strength > 0.8:  # 强空头：完全拒绝
+                logger.info(
+                    f"[ChanStrategy] 强空头趋势(强度={trend_strength:.2f})，"
+                    f"拒绝BUY信号"
+                )
+                return 0.0
+            elif trend_strength > 0.5:  # 中等空头：降仓50%
+                logger.info(
+                    f"[ChanStrategy] 中等空头趋势(强度={trend_strength:.2f})，"
+                    f"BUY信号降仓50%"
+                )
+                return 0.5
+            else:  # 弱空头：降仓70%
+                logger.info(
+                    f"[ChanStrategy] 弱空头趋势(强度={trend_strength:.2f})，"
+                    f"BUY信号降仓30%（可尝试抄底）"
+                )
+                return 0.7
+
+        # 多头趋势 + SELL信号
+        if ema_trend == "bullish" and action == "SELL":
+            if trend_strength > 0.8:  # 强多头：完全拒绝
+                logger.info(
+                    f"[ChanStrategy] 强多头趋势(强度={trend_strength:.2f})，"
+                    f"拒绝SELL信号"
+                )
+                return 0.0
+            elif trend_strength > 0.5:  # 中等多头：降仓50%
+                logger.info(
+                    f"[ChanStrategy] 中等多头趋势(强度={trend_strength:.2f})，"
+                    f"SELL信号降仓50%"
+                )
+                return 0.5
+            else:  # 弱多头：降仓70%
+                logger.info(
+                    f"[ChanStrategy] 弱多头趋势(强度={trend_strength:.2f})，"
+                    f"SELL信号降仓30%（可尝试做空）"
+                )
+                return 0.7
+
+        return 1.0
+
+    def _calculate_trend_strength(self) -> float:
+        """
+        计算当前趋势强度 (0.0 ~ 1.0)
+
+        基于 EMA20斜率 和 EMA20/EMA60乖离率 综合判断：
+        - 0.0-0.3: 弱趋势/震荡
+        - 0.3-0.5: 中等趋势
+        - 0.5-0.8: 较强趋势
+        - 0.8-1.0: 强趋势
+        """
+        df = self.df_30m
+        if df is None or df.empty or len(df) < 65:
+            return 0.3  # 数据不足，默认弱趋势
+
+        if 'EMA20' not in df.columns or 'EMA60' not in df.columns:
+            return 0.3
+
+        # EMA20的斜率（最近5根K线的变化率）
+        recent_ema20 = df['EMA20'].iloc[-5:].astype(float)
+        if len(recent_ema20) < 5:
+            return 0.3
+        slope = (recent_ema20.iloc[-1] - recent_ema20.iloc[0]) / recent_ema20.iloc[0]
+
+        # EMA20与EMA60的乖离率
+        ema20_val = float(df['EMA20'].iloc[-1])
+        ema60_val = float(df['EMA60'].iloc[-1])
+        divergence = abs(ema20_val - ema60_val) / ema60_val
+
+        # 综合强度 (斜率权重0.4, 乖离率权重0.6)
+        slope_norm = min(abs(slope) * 100, 1.0)  # 斜率归一化
+        div_norm = min(divergence * 20, 1.0)      # 乖离率归一化
+
+        strength = 0.4 * slope_norm + 0.6 * div_norm
+        return round(min(strength, 1.0), 2)
+
     def should_filter_by_trend(self, action: str) -> bool:
         """
-        根据日线趋势决定是否过滤信号
+        根据 EMA 趋势决定是否过滤信号 (替代日线趋势判断)
 
+        使用 EMA20/EMA60 双均线系统识别趋势方向：
+        
         过滤规则：
-        - 强下降/下降趋势：拒绝做多信号
-        - 强上升/上升趋势：拒绝做空信号
-        - 震荡/未知：不过滤
+        - 空头趋势 (bearish)：拒绝做多信号（顺势而为）
+        - 多头趋势 (bullish)：拒绝做空信号（顺势而为）
+        - 震荡市 (neutral)：不过滤，允许双向交易
+
+        趋势判断标准：
+        - 多头趋势：EMA20 > EMA60 且 价格 > EMA20
+        - 空头趋势：EMA20 < EMA60 且 价格 < EMA20
+        - 震荡市：其他情况
 
         Args:
             action: 信号类型 ("BUY" 或 "SELL")
@@ -1365,24 +1592,25 @@ class ChanStrategy(BaseStrategy):
         Returns:
             bool: True表示应该过滤（拒绝信号），False表示允许通过
         """
-        daily_trend = self.get_daily_trend()
+        ema_trend = self._get_ema_trend()
 
-        # 下降趋势中拒绝做多
-        if daily_trend in ["strong_down", "down"] and action == "BUY":
+        # 空头趋势中拒绝做多
+        if ema_trend == "bearish" and action == "BUY":
             logger.info(
-                f"[ChanStrategy] 📉 趋势过滤: 日线{daily_trend}趋势，"
-                f"拒绝BUY信号（只允许做空）"
+                f"[ChanStrategy] 📉 EMA趋势过滤: {ema_trend}趋势(EMA20<EMA60, 价格<EMA20)，"
+                f"拒绝BUY信号（只允许做空或等待）"
             )
             return True
 
-        # 上升趋势中拒绝做空
-        if daily_trend in ["strong_up", "up"] and action == "SELL":
+        # 多头趋势中拒绝做空
+        if ema_trend == "bullish" and action == "SELL":
             logger.info(
-                f"[ChanStrategy] 📈 趋势过滤: 日线{daily_trend}趋势，"
-                f"拒绝SELL信号（只允许做多）"
+                f"[ChanStrategy] 📈 EMA趋势过滤: {ema_trend}趋势(EMA20>EMA60, 价格>EMA20)，"
+                f"拒绝SELL信号（只允许做多或等待）"
             )
             return True
 
+        # 震荡市或未知状态：不过滤
         return False
 
     def check_volatility_filter(self) -> bool:
@@ -1471,19 +1699,23 @@ class ChanStrategy(BaseStrategy):
 
             # UTC时间转换（假设数据是UTC时间）
             # 亚盘：00:00-08:00 UTC (北京时间08:00-16:00)
+            # 优化：改为降仓50%而非完全拒绝
             if 0 <= hour < 8:
                 logger.info(
-                    f"[ChanStrategy] ⏰ 时间过滤: {hour:02d}:00 UTC (亚盘)，"
-                    f"流动性偏低，拒绝交易"
+                    f"[ChanStrategy] ⏰ 亚盘时段({hour:02d}:00 UTC)，"
+                    f"降低仓位至50%以控制流动性风险"
                 )
-                return False
+                self._time_position_mult = 0.5
+                return True  # 不拒绝，但降低仓位
 
             # 欧盘美盘重叠：13:00-17:00 UTC (最佳时段)
             if 13 <= hour < 17:
                 logger.debug(f"[ChanStrategy] ⏰ 最佳时段: {hour:02d}:00 UTC")
+                self._time_position_mult = 1.0
                 return True
 
-            # 其他时段：允许但降低仓位
+            # 其他时段：正常仓位
+            self._time_position_mult = 1.0
             return True
 
         except Exception as e:
@@ -1563,7 +1795,7 @@ class ChanStrategy(BaseStrategy):
         Returns:
             tuple: (是否通过, 实际盈亏比)
         """
-        MIN_RISK_REWARD_RATIO = 2.5  # 最低盈亏比要求（方案9：从3.0回调至2.5，平衡质量与数量）
+        MIN_RISK_REWARD_RATIO = 1.5  # 最低盈亏比要求（优化：2.5→1.5，增加交易机会）
 
         target_price = self.calculate_target_price(action)
 
@@ -1629,22 +1861,22 @@ class ChanStrategy(BaseStrategy):
         last_pen = self.pens[-1]
         current_kline_idx = len(self.df_30m) - 1 if not self.df_30m.empty else 0
 
-        # ===== 方案2：日线趋势过滤（提前预判）=====
-        # 在详细检测前先进行趋势过滤，避免不必要的计算
+        # ===== 方案2：EMA趋势分级过滤（逆势降仓，不直接拒绝）=====
         if last_pen.direction == "down":
-            if self.should_filter_by_trend("BUY"):
+            self._trend_position_mult = self._get_trend_filter_result("BUY")
+            if self._trend_position_mult == 0:
                 return None
         elif last_pen.direction == "up":
-            if self.should_filter_by_trend("SELL"):
+            self._trend_position_mult = self._get_trend_filter_result("SELL")
+            if self._trend_position_mult == 0:
                 return None
 
         # ===== 方案6：波动率过滤器（ATR自适应）=====
         if not self.check_volatility_filter():
             return None
 
-        # ===== 方案8：时间过滤器（避开低流动性时段）=====
-        if not self.check_time_filter():
-            return None
+        # ===== 方案B：时间过滤器（亚盘降仓50%，不拒绝）=====
+        self.check_time_filter()  # 设置 _time_position_mult (0.5 or 1.0)
 
         signal = {
             "action": "HOLD",
@@ -1684,8 +1916,10 @@ class ChanStrategy(BaseStrategy):
                         "reason": reason,
                         "position": "long",
                         "resonance_level": resonance_level,
-                        "position_size_ratio": self.RESONANCE_POSITION_SIZING[resonance_level],
-                        "ma_info": self._get_ma_signal(last_pen.low) if hasattr(self, '_get_ma_signal') else {}
+                        "position_size_ratio": self.RESONANCE_POSITION_SIZING[resonance_level] * self._trend_position_mult * self._time_position_mult,
+                        "ma_info": self._get_ma_signal(last_pen.low) if hasattr(self, '_get_ma_signal') else {},
+                        "trend_mult": self._trend_position_mult,
+                        "time_mult": self._time_position_mult
                     })
                 else:
                     # 禁用共振时使用原始格式
@@ -1763,9 +1997,11 @@ class ChanStrategy(BaseStrategy):
                         "reason": reason,
                         "position": "short",
                         "resonance_level": resonance_level,
-                        "position_size_ratio": self.RESONANCE_POSITION_SIZING[resonance_level],
+                        "position_size_ratio": self.RESONANCE_POSITION_SIZING[resonance_level] * self._trend_position_mult * self._time_position_mult,
                         "ma_info": self._get_ma_signal(last_pen.high) if hasattr(self, '_get_ma_signal') else {},
-                        "signal_type": sell_signal_type
+                        "signal_type": sell_signal_type,
+                        "trend_mult": self._trend_position_mult,
+                        "time_mult": self._time_position_mult
                     })
                 else:
                     signal.update({

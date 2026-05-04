@@ -39,7 +39,7 @@ def main():
         sys.exit(1)
     
     # 获取日期范围（最近7天）
-    start_date, end_date = get_date_range(days=180)
+    start_date, end_date = get_date_range(days=60)
     
     # 构建命令
     cmd = [
