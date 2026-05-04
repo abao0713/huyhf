@@ -709,137 +709,148 @@ class BacktestEngine:
             logger.warning(f"[BacktestEngine] 凯利公式计算失败: {e}")
             return base_investment_ratio * 0.7
 
-    def _initialize_stop_loss(self, entry_price: float, position_type: str) -> None:
+    def _init_long_stop_loss(self, entry_price: float) -> None:
         """
-        初始化止损位（开仓时调用）
-
-        根据配置决定使用固定止损、ATR止损或混合模式
+        初始化多单止损位（开仓时调用）
 
         Args:
             entry_price: 开仓价格
-            position_type: 持仓方向 ("long" 或 "short")
         """
         if self.config.use_atr_stop_loss and self.current_atr > 0:
-            # 使用ATR止损
             atr_stop_distance = self.current_atr * self.config.atr_multiplier
-
-            if position_type == "long":
-                self.initial_stop_loss_price = entry_price - atr_stop_distance
-                self.trailing_stop_price = self.initial_stop_loss_price
-                self.highest_price_since_entry = entry_price
-            else:  # short
-                self.initial_stop_loss_price = entry_price + atr_stop_distance
-                self.trailing_stop_price = self.initial_stop_loss_price
-                self.lowest_price_since_entry = entry_price
-
+            self.long_initial_stop_loss_price = entry_price - atr_stop_distance
+            self.long_trailing_stop_price = self.long_initial_stop_loss_price
+            self.long_highest_price = entry_price
             logger.info(
-                f"[BacktestEngine] 初始化ATR止损: "
-                f"入场价={entry_price:.2f}, "
-                f"ATR={self.current_atr:.2f}, "
-                f"止损距离={atr_stop_distance:.2f}, "
-                f"初始止损价={self.initial_stop_loss_price:.2f}"
+                f"[LONG] 初始化ATR止损: "
+                f"入场价={entry_price:.2f}, ATR={self.current_atr:.2f}, "
+                f"止损距离={atr_stop_distance:.2f}, 初始止损价={self.long_initial_stop_loss_price:.2f}"
             )
         else:
-            # 使用传统固定百分比止损
-            if position_type == "long":
-                stop_loss_pct = self.config.stop_loss_pct
-                self.initial_stop_loss_price = entry_price * (1 - stop_loss_pct)
-                self.trailing_stop_price = self.initial_stop_loss_price
-                self.highest_price_since_entry = entry_price
-            else:  # short
-                stop_loss_pct = self.config.stop_loss_pct
-                self.initial_stop_loss_price = entry_price * (1 + stop_loss_pct)
-                self.trailing_stop_price = self.initial_stop_loss_price
-                self.lowest_price_since_entry = entry_price
+            self.long_initial_stop_loss_price = entry_price * (1 - self.config.long_stop_loss_ratio)
+            self.long_trailing_stop_price = self.long_initial_stop_loss_price
+            self.long_highest_price = entry_price
+            logger.info(
+                f"[LONG] 初始化固定止损: "
+                f"入场价={entry_price:.2f}, 止损比例={self.config.long_stop_loss_ratio*100:.1f}%, "
+                f"初始止损价={self.long_initial_stop_loss_price:.2f}"
+            )
 
-        self.is_trailing_stop_active = False  # 重置追踪止损状态
+        self.long_is_trailing_active = False
 
-    def _update_trailing_stop(self, current_price: float) -> None:
+    def _init_short_stop_loss(self, entry_price: float) -> None:
         """
-        更新追踪止损位
+        初始化空单止损位（开仓时调用）
+
+        Args:
+            entry_price: 开仓价格
+        """
+        if self.config.use_atr_stop_loss and self.current_atr > 0:
+            atr_stop_distance = self.current_atr * self.config.atr_multiplier
+            self.short_initial_stop_loss_price = entry_price + atr_stop_distance
+            self.short_trailing_stop_price = self.short_initial_stop_loss_price
+            self.short_lowest_price = entry_price
+            logger.info(
+                f"[SHORT] 初始化ATR止损: "
+                f"入场价={entry_price:.2f}, ATR={self.current_atr:.2f}, "
+                f"止损距离={atr_stop_distance:.2f}, 初始止损价={self.short_initial_stop_loss_price:.2f}"
+            )
+        else:
+            self.short_initial_stop_loss_price = entry_price * (1 + self.config.short_stop_loss_ratio)
+            self.short_trailing_stop_price = self.short_initial_stop_loss_price
+            self.short_lowest_price = entry_price
+            logger.info(
+                f"[SHORT] 初始化固定止损: "
+                f"入场价={entry_price:.2f}, 止损比例={self.config.short_stop_loss_ratio*100:.1f}%, "
+                f"初始止损价={self.short_initial_stop_loss_price:.2f}"
+            )
+
+        self.short_is_trailing_active = False
+
+    def _update_long_trailing_stop(self, current_price: float) -> None:
+        """
+        更新多单追踪止损位
 
         当盈利超过激活阈值后，开始追踪止损
-        追踪止损只向有利方向移动，不会回退
+        价格创新高 → 上移止损（锁利）
 
         Args:
             current_price: 当前价格
         """
-        if not self.config.use_trailing_stop or self.position == 0:
+        if not self.config.use_trailing_stop or self.long_position <= 0 or self.long_avg_price <= 0:
             return
 
-        profit_pct = (current_price - self.avg_price) / self.avg_price
+        profit_pct = (current_price - self.long_avg_price) / self.long_avg_price
 
-        # 检查是否应该激活追踪止损
-        if not self.is_trailing_stop_active:
-            if abs(profit_pct) >= self.config.trailing_stop_activation:
-                self.is_trailing_stop_active = True
+        if not self.long_is_trailing_active:
+            if profit_pct >= self.config.long_trailing_stop_activation:
+                self.long_is_trailing_active = True
                 logger.info(
-                    f"[BacktestEngine] ✨ 激活追踪止损! "
-                    f"盈利={profit_pct*100:.2f}%, "
-                    f"当前价={current_price:.2f}"
+                    f"[LONG] ✨ 激活追踪止损! "
+                    f"盈利={profit_pct*100:.2f}%, 当前价={current_price:.2f}"
                 )
 
-        # 更新追踪止损位
-        if self.is_trailing_stop_active:
-            if self.position > 0:  # 多单
-                # 更新最高价
-                if current_price > self.highest_price_since_entry:
-                    self.highest_price_since_entry = current_price
-
-                    # 计算新的追踪止损位（只在价格上涨时上移）
-                    new_trailing_stop = self.highest_price_since_entry * (
-                        1 - self.config.trailing_stop_distance
+        if self.long_is_trailing_active:
+            if current_price > self.long_highest_price:
+                self.long_highest_price = current_price
+                new_trailing_stop = self.long_highest_price * (
+                    1 - self.config.long_trailing_stop_distance
+                )
+                if new_trailing_stop > self.long_trailing_stop_price:
+                    old_stop = self.long_trailing_stop_price
+                    self.long_trailing_stop_price = new_trailing_stop
+                    logger.debug(
+                        f"[LONG] 追踪止损上移: {old_stop:.2f} → {new_trailing_stop:.2f} "
+                        f"(最高价={current_price:.2f})"
                     )
 
-                    # 只向上移动止损（锁定更多利润）
-                    if new_trailing_stop > self.trailing_stop_price:
-                        old_stop = self.trailing_stop_price
-                        self.trailing_stop_price = new_trailing_stop
-
-                        logger.debug(
-                            f"[BacktestEngine] 追踪止损上移: "
-                            f"{old_stop:.2f} → {new_trailing_stop:.2f} "
-                            f"(最高价={current_price:.2f})"
-                        )
-
-            elif self.position < 0:  # 空单
-                # ✅ 空单正确逻辑：价格下跌 = 盈利增加
-                # 应该在价格创新低时下移止损位来锁定利润
-                if current_price < self.lowest_price_since_entry:
-                    self.lowest_price_since_entry = current_price
-
-                    # 计算新的追踪止损位（在最低价上方一定距离）
-                    new_trailing_stop = self.lowest_price_since_entry * (
-                        1 + self.config.trailing_stop_distance
-                    )
-
-                    # 对于空单：只向下移动止损（跟随价格下跌，锁定利润）
-                    if new_trailing_stop < self.trailing_stop_price:
-                        old_stop = self.trailing_stop_price
-                        self.trailing_stop_price = new_trailing_stop
-
-                        logger.debug(
-                            f"[BacktestEngine] 空单追踪止损下移(锁利): "
-                            f"{old_stop:.2f} → {new_trailing_stop:.2f} "
-                            f"(最低价={current_price:.2f}, 盈利中)"
-                        )
-
-    def _check_advanced_stop_loss(self, kline) -> None:
+    def _update_short_trailing_stop(self, current_price: float) -> None:
         """
-        高级止损检查（集成ATR止损 + 动态追踪止损）
+        更新空单追踪止损位
 
-        止损逻辑：
-        1. 初始阶段：使用ATR止损或固定止损
-        2. 盈利达标：切换到动态追踪止损
-        3. 追随止损：锁定利润，减少回撤
+        当盈利超过激活阈值后，开始追踪止损
+        价格创新低 → 下移止损（锁利）
+
+        Args:
+            current_price: 当前价格
+        """
+        if not self.config.use_trailing_stop or self.short_position <= 0 or self.short_avg_price <= 0:
+            return
+
+        profit_pct = (self.short_avg_price - current_price) / self.short_avg_price
+
+        if not self.short_is_trailing_active:
+            if profit_pct >= self.config.short_trailing_stop_activation:
+                self.short_is_trailing_active = True
+                logger.info(
+                    f"[SHORT] ✨ 激活追踪止损! "
+                    f"盈利={profit_pct*100:.2f}%, 当前价={current_price:.2f}"
+                )
+
+        if self.short_is_trailing_active:
+            if current_price < self.short_lowest_price:
+                self.short_lowest_price = current_price
+                new_trailing_stop = self.short_lowest_price * (
+                    1 + self.config.short_trailing_stop_distance
+                )
+                if new_trailing_stop < self.short_trailing_stop_price:
+                    old_stop = self.short_trailing_stop_price
+                    self.short_trailing_stop_price = new_trailing_stop
+                    logger.debug(
+                        f"[SHORT] 追踪止损下移(锁利): {old_stop:.2f} → {new_trailing_stop:.2f} "
+                        f"(最低价={current_price:.2f})"
+                    )
+
+    def _check_long_stop_loss(self, kline) -> None:
+        """
+        检查多单止损/止盈触发（只平仓，不反向开仓）
 
         Args:
             kline: 当前K线数据
         """
-        if self.position == 0 or self.avg_price <= 0:
+        if self.long_position <= 0 or self.long_avg_price <= 0:
             return
 
-        # 获取当前价格
         if hasattr(kline, 'close'):
             current_price = float(kline.close)
             open_time = kline.open_time
@@ -847,95 +858,69 @@ class BacktestEngine:
             current_price = float(kline["close"])
             open_time = kline["open_time"]
 
-        # 更新追踪止损（支持多空双向）
-        self._update_trailing_stop(current_price)
+        self._update_long_trailing_stop(current_price)
 
-        # 确定当前有效的止损价
-        effective_stop_loss = self.trailing_stop_price
+        effective_stop_loss = self.long_trailing_stop_price
 
-        # 检查是否触发止损
-        stop_loss_triggered = False
-        stop_loss_reason = ""
+        if current_price <= effective_stop_loss:
+            profit_pct = (current_price - self.long_avg_price) / self.long_avg_price
+            if profit_pct > 0:
+                stop_reason = "止盈 (追踪止损锁定利润)"
+            else:
+                stop_reason = "止损"
 
-        if self.position > 0:  # 多单持仓
-            if current_price <= effective_stop_loss:
-                stop_loss_triggered = True
-                stop_loss_reason = "ATR/追踪止损" if self.is_trailing_stop_active else "初始止损"
+            logger.info(
+                f"[LONG] {'✅止盈' if profit_pct > 0 else '🛑止损'}: "
+                f"盈亏={profit_pct*100:+.2f}%, "
+                f"开仓价={self.long_avg_price:.2f} -> 当前价={current_price:.2f}"
+            )
 
+            self._close_long(open_time, current_price, f"[LONG] {stop_reason}")
+
+            if profit_pct >= self.config.long_take_profit_ratio:
                 logger.info(
-                    f"[BacktestEngine] 🛑 多单触发{stop_loss_reason}: "
-                    f"当前价={current_price:.2f} <= 止损价={effective_stop_loss:.2f}"
+                    f"[LONG] 🎯 触发固定止盈: 盈利={profit_pct*100:.2f}% >= {self.config.long_take_profit_ratio*100:.1f}%"
                 )
 
-        elif self.position < 0:  # 空单持仓
-            if current_price >= effective_stop_loss:
-                stop_loss_triggered = True
-                stop_loss_reason = "ATR/追踪止损" if self.is_trailing_stop_active else "初始止损"
+    def _check_short_stop_loss(self, kline) -> None:
+        """
+        检查空单止损/止盈触发（只平仓，不反向开仓）
 
+        Args:
+            kline: 当前K线数据
+        """
+        if self.short_position <= 0 or self.short_avg_price <= 0:
+            return
+
+        if hasattr(kline, 'close'):
+            current_price = float(kline.close)
+            open_time = kline.open_time
+        else:
+            current_price = float(kline["close"])
+            open_time = kline["open_time"]
+
+        self._update_short_trailing_stop(current_price)
+
+        effective_stop_loss = self.short_trailing_stop_price
+
+        if current_price >= effective_stop_loss:
+            profit_pct = (self.short_avg_price - current_price) / self.short_avg_price
+            if profit_pct > 0:
+                stop_reason = "止盈 (追踪止损锁定利润)"
+            else:
+                stop_reason = "止损"
+
+            logger.info(
+                f"[SHORT] {'✅止盈' if profit_pct > 0 else '🛑止损'}: "
+                f"盈亏={profit_pct*100:+.2f}%, "
+                f"开仓价={self.short_avg_price:.2f} -> 当前价={current_price:.2f}"
+            )
+
+            self._close_short(open_time, current_price, f"[SHORT] {stop_reason}")
+
+            if profit_pct >= self.config.short_take_profit_ratio:
                 logger.info(
-                    f"[BacktestEngine] 🛑 空单触发{stop_loss_reason}: "
-                    f"当前价={current_price:.2f} >= 止损价={effective_stop_loss:.2f}"
-                )
-
-        # 执行止损/止盈平仓 + 反向开仓（连续循环交易）
-        if stop_loss_triggered:
-            # 判断实际是止损还是止盈
-            if self.position > 0:  # 多单持仓
-                profit_pct = (current_price - self.avg_price) / self.avg_price
-                if profit_pct > 0:
-                    stop_loss_reason = "止盈 (追踪止损锁定利润)"  # 盈利>0为止盈
-                else:
-                    stop_loss_reason = "止损 (ATR止损)"  # 亏损<0为止损
-
-                logger.info(
-                    f"[BacktestEngine] {'✅止盈' if profit_pct > 0 else '🛑止损'}: "
-                    f"多单盈亏={profit_pct*100:+.2f}%, "
-                    f"开仓价={self.avg_price:.2f} -> 当前价={current_price:.2f}"
-                )
-
-                # 平多单
-                self._sell_with_reason(
-                    open_time,
-                    current_price,
-                    f"{stop_loss_reason}"
-                )
-
-                # 连续循环交易：平多后立即开空单
-                logger.info(f"[BacktestEngine] 🔄 连续循环：平多后立即开空单")
-                self._open_short_position(
-                    open_time,
-                    current_price,
-                    self.config.investment_ratio,
-                    self.config.leverage
-                )
-
-            elif self.position < 0:  # 空单持仓
-                profit_pct = (self.avg_price - current_price) / self.avg_price
-                if profit_pct > 0:
-                    stop_loss_reason = "止盈 (追踪止损锁定利润)"  # 盈利>0为止盈
-                else:
-                    stop_loss_reason = "止损 (ATR止损)"  # 亏损<0为止损
-
-                logger.info(
-                    f"[BacktestEngine] {'✅止盈' if profit_pct > 0 else '🛑止损'}: "
-                    f"空单盈亏={profit_pct*100:+.2f}%, "
-                    f"开仓价={self.avg_price:.2f} -> 当前价={current_price:.2f}"
-                )
-
-                # 平空单（使用_close_short_position正确计算盈亏）
-                self._close_short_position(
-                    open_time,
-                    current_price,
-                    f"{stop_loss_reason}"
-                )
-
-                # 连续循环交易：平空后立即开多单
-                logger.info(f"[BacktestEngine] 🔄 连续循环：平空后立即开多单")
-                self._open_long_position(
-                    open_time,
-                    current_price,
-                    self.config.investment_ratio,
-                    self.config.leverage
+                    f"[SHORT] 🎯 触发固定止盈: 盈利={profit_pct*100:.2f}% >= {self.config.short_take_profit_ratio*100:.1f}%"
                 )
 
     def _check_stop_loss_take_profit(self, kline) -> None:
