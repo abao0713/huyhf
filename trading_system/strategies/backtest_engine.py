@@ -1046,35 +1046,17 @@ class BacktestEngine:
         leverage = self.config.leverage  # 默认50倍
 
         if action == "BUY":
-            # ===== 方案1：禁止逆势加仓（消除马丁格尔陷阱）=====
-            if self.position > 0:
+            if self.long_position > 0:
                 logger.info(
-                    f"[BacktestEngine] 🚫 已持有多单({self.position:.4f}个)，"
+                    f"[BacktestEngine] 🚫 已持有多单({self.long_position:.4f}个)，"
                     f"忽略新BUY信号 @ ${market_price:.2f} (防止逆势加仓)"
                 )
                 return
 
-            # 底背驰信号：先检查是否有空单持仓
-            
-            if self.position < 0:
-                # 有空单 -> 先平仓空单（正确计算盈亏）
-                short_qty = abs(self.position)
-                exec_price = market_price * (1 + self.config.slippage)
-                close_reason = f"{reason} 平空"
-
-                logger.info(
-                    f"[BacktestEngine] 检测到空单持仓 {short_qty:.4f}，"
-                    f"开空价={self.avg_price:.2f}, 当前价={market_price:.2f}, "
-                    f"浮动盈亏={((self.avg_price-exec_price)/self.avg_price*100):+.2f}%, 执行平仓"
-                )
-                self._close_short_position(open_time, exec_price, close_reason)
-                logger.info(f"[BacktestEngine] 已平仓空单: {short_qty:.4f} @ {exec_price:.2f}")
-
-            # 根据共振级别动态调整仓位比例（方案5：使用凯利公式优化）
             base_amount = self.balance * investment_ratio
             resonance_ratio = signal.get("position_size_ratio", 0.7)
             kelly_ratio = self._calculate_kelly_position_size(investment_ratio, signal)
-            position_size_ratio = resonance_ratio * kelly_ratio  # 共振×凯利
+            position_size_ratio = resonance_ratio * kelly_ratio
             actual_amount = base_amount * position_size_ratio
 
             if actual_amount <= 0:
@@ -1088,30 +1070,17 @@ class BacktestEngine:
                 f"实际投入${actual_amount:.2f}"
             )
 
-            # 计算数量（考虑杠杆）
-            # 如果限价单已确定成交价格，使用该价格加滑点；否则使用市场价格
             if 'exec_price' in locals() and exec_price > 0:
-                # 限价单模式：已确定的成交价格基础上考虑滑点
-                if action == "BUY":
-                    final_exec_price = exec_price * (1 + self.config.slippage)
-                else:
-                    final_exec_price = exec_price * (1 - self.config.slippage)
+                final_exec_price = exec_price * (1 + self.config.slippage)
             else:
-                # 市价单模式
-                if action == "BUY":
-                    final_exec_price = market_price * (1 + self.config.slippage)
-                else:
-                    final_exec_price = market_price * (1 - self.config.slippage)
+                final_exec_price = market_price * (1 + self.config.slippage)
 
             quantity = (actual_amount * leverage) / final_exec_price
 
-            # 计算止损价格（多单止损 = 爆仓价格 * long_stop_loss_multiplier）
-            # 爆仓价格公式：对于多头合约，爆仓价 ≈ 开仓价 * (1 - 1/杠杆)
             liquidation_price = final_exec_price * (1 - 1/leverage)
             stop_loss_price = liquidation_price * self.config.long_stop_loss_multiplier
 
-            # 开多单
-            self._buy_with_reason(
+            self._open_long(
                 open_time,
                 final_exec_price,
                 actual_amount,
@@ -1129,39 +1098,20 @@ class BacktestEngine:
                 f"止损价{stop_loss_price:.2f} (爆仓价×{self.config.long_stop_loss_multiplier:.0f}%)"
             )
 
-            # 初始化高级止损（ATR + 追踪止损）
-            self._initialize_stop_loss(final_exec_price, "long")
+            self._init_long_stop_loss(final_exec_price)
 
         elif action == "SELL":
-            # ===== 方案1：禁止逆势加仓（消除马丁格尔陷阱）=====
-            if self.position < 0:
+            if self.short_position > 0:
                 logger.info(
-                    f"[BacktestEngine] 🚫 已持有空单({abs(self.position):.4f}个)，"
+                    f"[BacktestEngine] 🚫 已持有空单({self.short_position:.4f}个)，"
                     f"忽略新SELL信号 @ ${market_price:.2f} (防止逆势加仓)"
                 )
                 return
 
-            # 顶背驰信号：先检查是否有多单持仓
-            
-            if self.position > 0:
-                # 有多单 -> 先平仓多单
-                long_qty = self.position
-                exec_price = market_price * (1 - self.config.slippage)
-                close_reason = f"{reason} 平多"
-                
-                logger.info(f"[BacktestEngine] 检测到多单持仓 {long_qty:.4f}，执行平仓")
-                self._sell_with_reason(
-                    open_time,
-                    exec_price,
-                    close_reason
-                )
-                logger.info(f"[BacktestEngine] 已平仓多单: {long_qty:.4f} @ {exec_price:.2f}")
-
-            # 根据共振级别动态调整仓位比例（方案5：使用凯利公式优化）
             base_amount = self.balance * investment_ratio
             resonance_ratio = signal.get("position_size_ratio", 0.7)
             kelly_ratio = self._calculate_kelly_position_size(investment_ratio, signal)
-            position_size_ratio = resonance_ratio * kelly_ratio  # 共振×凯利
+            position_size_ratio = resonance_ratio * kelly_ratio
             actual_amount = base_amount * position_size_ratio
 
             if actual_amount <= 0:
@@ -1175,35 +1125,22 @@ class BacktestEngine:
                 f"实际投入${actual_amount:.2f}"
             )
 
-            # 计算数量（考虑杠杆）
-            # 如果限价单已确定成交价格，使用该价格加滑点；否则使用市场价格
             if 'exec_price' in locals() and exec_price > 0:
-                # 限价单模式：已确定的成交价格基础上考虑滑点
-                if action == "BUY":
-                    final_exec_price = exec_price * (1 + self.config.slippage)
-                else:
-                    final_exec_price = exec_price * (1 - self.config.slippage)
+                final_exec_price = exec_price * (1 - self.config.slippage)
             else:
-                # 市价单模式
-                if action == "BUY":
-                    final_exec_price = market_price * (1 + self.config.slippage)
-                else:
-                    final_exec_price = market_price * (1 - self.config.slippage)
+                final_exec_price = market_price * (1 - self.config.slippage)
 
             quantity = (actual_amount * leverage) / final_exec_price
 
-            # 计算止损价格（空单止损 = 爆仓价格 * short_stop_loss_multiplier）
-            # 爆仓价格公式：对于空头合约，爆仓价 ≈ 开仓价 * (1 + 1/杠杆)
             liquidation_price = final_exec_price * (1 + 1/leverage)
             stop_loss_price = liquidation_price * self.config.short_stop_loss_multiplier
 
-            # 开空单（_open_short_position内部会处理滑点，传原始市价）
-            self._open_short_position(
+            self._open_short(
                 open_time,
                 market_price,
                 self.config.investment_ratio,
                 self.config.leverage,
-                reason
+                signal.get("reason", "SELL信号开空")
             )
             logger.info(
                 f"[BacktestEngine] 开空单成功: "
@@ -1217,8 +1154,7 @@ class BacktestEngine:
                 f"止损价{stop_loss_price:.2f} (爆仓价×{self.config.short_stop_loss_multiplier:.0f}%)"
             )
 
-            # 初始化高级止损（ATR + 追踪止损）
-            self._initialize_stop_loss(final_exec_price, "short")
+            self._init_short_stop_loss(final_exec_price)
 
     def _validate_signal(self, action: str, signal: Dict[str, Any]) -> bool:
         """
