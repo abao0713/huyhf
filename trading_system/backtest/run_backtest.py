@@ -88,6 +88,21 @@ def parse_args() -> argparse.Namespace:
         help="结束日期，格式YYYY-MM-DD（例如：2026-05-02）"
     )
     
+    # V2策略特有参数
+    parser.add_argument(
+        "--strategy-version",
+        type=str,
+        default="v1",
+        choices=["v1", "v2"],
+        help="策略版本（v1=原始背驰策略, v2=分型驱动策略）"
+    )
+    parser.add_argument(
+        "--max-add-positions",
+        type=int,
+        default=3,
+        help="V2策略: 最大加仓次数（默认3次）"
+    )
+    
     return parser.parse_args()
 
 
@@ -162,6 +177,9 @@ def run_backtest(
     # 日期范围参数
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    # V2策略参数
+    strategy_version: str = "v1",
+    max_add_positions: int = 3,
 ) -> Dict[str, Any]:
     """Run a Chan strategy backtest and persist the result.
     
@@ -183,6 +201,8 @@ def run_backtest(
         short_stop_loss_multiplier: 空单止损倍数（默认80%）
         start_date: 开始日期，格式YYYY-MM-DD（可选）
         end_date: 结束日期，格式YYYY-MM-DD（可选）
+        strategy_version: 策略版本（v1=原始背驰策略, v2=分型驱动策略）
+        max_add_positions: V2策略最大加仓次数（默认3）
     
     Returns:
         回测结果字典
@@ -195,6 +215,11 @@ def run_backtest(
     # 记录日期范围信息
     if start_date or end_date:
         logger.info("Date range: %s to %s", start_date or "earliest", end_date or "latest")
+    
+    # 记录策略版本
+    logger.info("Strategy version: %s", strategy_version)
+    if strategy_version == "v2":
+        logger.info("V2 config: max_add_positions=%d", max_add_positions)
     
     logger.info("Continuous trading config: investment_ratio=%.2f, leverage=%dx, "
                 "long_stop=%.2f, short_stop=%.2f",
@@ -225,7 +250,24 @@ def run_backtest(
         len(data["1d"]),
     )
 
-    strategy = ChanStrategy(symbol=symbol, hg1=hg1, use_binance_client=False)
+    # 根据版本选择策略
+    if strategy_version == "v2":
+        from trading_system.strategies.chan_strategy_v2 import ChanStrategyV2
+        strategy = ChanStrategyV2(
+            symbol=symbol,
+            time_frame=interval,
+            hg1=hg1,
+            max_add_positions=max_add_positions,
+            investment_ratio=investment_ratio,
+            leverage=leverage,
+            use_binance_client=False
+        )
+        logger.info("Using ChanStrategyV2 (Fractal-driven)")
+    else:
+        from trading_system.strategies.chan_strategy import ChanStrategy
+        strategy = ChanStrategy(symbol=symbol, hg1=hg1, use_binance_client=False)
+        logger.info("Using ChanStrategyV1 (Divergence-driven)")
+    
     results = engine.run_backtest(data, strategy, interval)
 
     if not results:
@@ -370,6 +412,9 @@ def main() -> None:
         # 传递日期范围参数
         start_date=args.start_date,
         end_date=args.end_date,
+        # 传递V2策略参数
+        strategy_version=args.strategy_version,
+        max_add_positions=args.max_add_positions,
     )
 
     if not results:

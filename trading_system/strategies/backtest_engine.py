@@ -63,16 +63,16 @@ class BacktestConfig:
     trailing_stop_step: float = 0.015  # 追踪止损步进(1.5%)
 
     # 做多止盈止损（独立）
-    long_take_profit_ratio: float = 0.05       # 做多止盈 5%（高胜率策略，放大盈利）
-    long_stop_loss_ratio: float = 0.05         # 做多止损 5%（方向锁定时适度收紧）
-    long_trailing_stop_activation: float = 0.025  # 做多追踪止损激活 2.5%（稍早锁利）
-    long_trailing_stop_distance: float = 0.02  # 做多追踪止损距离 2%
+    long_take_profit_ratio: float = 0.04       # 做多止盈 4%
+    long_stop_loss_ratio: float = 0.05         # 做多止损 5%（4→5，减少误触）
+    long_trailing_stop_activation: float = 0.025  # 做多追踪止损激活 2.5%
+    long_trailing_stop_distance: float = 0.020  # 做多追踪止损距离 2%
 
     # 做空止盈止损（独立）
-    short_take_profit_ratio: float = 0.05       # 做空止盈 5%（高胜率策略，放大盈利）
-    short_stop_loss_ratio: float = 0.05         # 做空止损 5%（方向锁定时适度收紧）
-    short_trailing_stop_activation: float = 0.025  # 做空追踪止损激活 2.5%（稍早锁利）
-    short_trailing_stop_distance: float = 0.02  # 做空追踪止损距离 2%
+    short_take_profit_ratio: float = 0.04       # 做空止盈 4%
+    short_stop_loss_ratio: float = 0.05         # 做空止损 5%（4→5，减少误触）
+    short_trailing_stop_activation: float = 0.025  # 做空追踪止损激活 2.5%
+    short_trailing_stop_distance: float = 0.020  # 做空追踪止损距离 2%
 
     # 限价单配置（新增 - 价格偏差检测）
     limit_order_enabled: bool = True  # 是否启用限价单模式
@@ -357,6 +357,12 @@ class BacktestEngine:
         # 资金费用计算器（重置）
         self.funding_calculator = FundingFeeCalculator()
 
+        # 杠杆交易跟踪（用于正确计算杠杆P&L）
+        self.long_leverage: int = 1
+        self.short_leverage: int = 1
+        self.long_margin_amount: float = 0.0
+        self.short_margin_amount: float = 0.0
+
     def load_data(
             self,
             symbol: str = "BTCUSDT",
@@ -478,6 +484,21 @@ class BacktestEngine:
 
             # 配置策略
             strategy.use_binance_client = False
+            
+            # V2策略特殊处理：初始化并注入数据
+            if hasattr(strategy, 'load_data_for_backtest'):
+                logger.info("检测到V2策略，初始化并注入回测数据...")
+                
+                # 异步初始化策略（但不获取数据）
+                import asyncio
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(strategy.initialize(strategy.symbol))
+                finally:
+                    loop.close()
+                
+                # 注入本地数据
+                strategy.load_data_for_backtest(df_interval, df_1d)
 
             # 准备日线时间索引
             daily_indices = self._prepare_daily_indices(df_interval, df_1d)
@@ -566,7 +587,7 @@ class BacktestEngine:
                 continue
 
             # 生成信号
-            signal = strategy.generate_signal()
+            signal = strategy.generate_signal(bar_idx=i)
 
             # 计算ATR（用于动态止损）
             if self.config.use_atr_stop_loss or self.config.use_trailing_stop:
@@ -760,7 +781,7 @@ class BacktestEngine:
             entry_price: 开仓价格
         """
         if self.config.use_atr_stop_loss and self.current_atr > 0:
-            atr_stop_distance = self.current_atr * self.config.atr_multiplier
+            atr_stop_distance = self.current_atr * self.config.atr_multiplier * self.config.long_stop_loss_multiplier
             self.long_initial_stop_loss_price = entry_price - atr_stop_distance
             self.long_trailing_stop_price = self.long_initial_stop_loss_price
             self.long_highest_price = entry_price
@@ -770,13 +791,15 @@ class BacktestEngine:
                 f"止损距离={atr_stop_distance:.2f}, 初始止损价={self.long_initial_stop_loss_price:.2f}"
             )
         else:
-            self.long_initial_stop_loss_price = entry_price * (1 - self.config.long_stop_loss_ratio)
+            leverage = max(self.long_leverage, 1)
+            stop_distance_pct = self.config.long_stop_loss_multiplier / leverage
+            self.long_initial_stop_loss_price = entry_price * (1 - stop_distance_pct)
             self.long_trailing_stop_price = self.long_initial_stop_loss_price
             self.long_highest_price = entry_price
             logger.info(
-                f"[LONG] 初始化固定止损: "
-                f"入场价={entry_price:.2f}, 止损比例={self.config.long_stop_loss_ratio*100:.1f}%, "
-                f"初始止损价={self.long_initial_stop_loss_price:.2f}"
+                f"[LONG] 初始化杠杆止损: "
+                f"入场价={entry_price:.2f}, 杠杆={leverage}x, 止损倍数={self.config.long_stop_loss_multiplier:.2f}, "
+                f"止损距离={stop_distance_pct*100:.1f}%, 初始止损价={self.long_initial_stop_loss_price:.2f}"
             )
 
         self.long_is_trailing_active = False
@@ -789,7 +812,7 @@ class BacktestEngine:
             entry_price: 开仓价格
         """
         if self.config.use_atr_stop_loss and self.current_atr > 0:
-            atr_stop_distance = self.current_atr * self.config.atr_multiplier
+            atr_stop_distance = self.current_atr * self.config.atr_multiplier * self.config.short_stop_loss_multiplier
             self.short_initial_stop_loss_price = entry_price + atr_stop_distance
             self.short_trailing_stop_price = self.short_initial_stop_loss_price
             self.short_lowest_price = entry_price
@@ -799,13 +822,15 @@ class BacktestEngine:
                 f"止损距离={atr_stop_distance:.2f}, 初始止损价={self.short_initial_stop_loss_price:.2f}"
             )
         else:
-            self.short_initial_stop_loss_price = entry_price * (1 + self.config.short_stop_loss_ratio)
+            leverage = max(self.short_leverage, 1)
+            stop_distance_pct = self.config.short_stop_loss_multiplier / leverage
+            self.short_initial_stop_loss_price = entry_price * (1 + stop_distance_pct)
             self.short_trailing_stop_price = self.short_initial_stop_loss_price
             self.short_lowest_price = entry_price
             logger.info(
-                f"[SHORT] 初始化固定止损: "
-                f"入场价={entry_price:.2f}, 止损比例={self.config.short_stop_loss_ratio*100:.1f}%, "
-                f"初始止损价={self.short_initial_stop_loss_price:.2f}"
+                f"[SHORT] 初始化杠杆止损: "
+                f"入场价={entry_price:.2f}, 杠杆={leverage}x, 止损倍数={self.config.short_stop_loss_multiplier:.2f}, "
+                f"止损距离={stop_distance_pct*100:.1f}%, 初始止损价={self.short_initial_stop_loss_price:.2f}"
             )
 
         self.short_is_trailing_active = False
@@ -1013,25 +1038,23 @@ class BacktestEngine:
 
     def _execute_trade(self, signal: Dict[str, Any], kline) -> None:
         """
-        执行交易（支持连续循环交易）
+        执行交易（支持V1和V2策略）
 
-        交易逻辑：
-        - BUY信号（底背驰）：判断是否有空单持仓
-          * 有空单 -> 平仓空单 + 开多单
-          * 无空单 -> 直接开多单
-        - SELL信号（顶背驰）：判断是否有多单持仓
-          * 有多单 -> 平仓多单 + 开空单
-          * 无多单 -> 直接开空单
+        V1策略逻辑：
+        - BUY信号：开多单
+        - SELL信号：开空单
 
-        配置参数（从self.config读取，可配置）：
-        - investment_ratio: 每次投入总金额的比例，默认10%
-        - leverage: 杠杆倍数，默认50倍
-        - long_stop_loss_multiplier: 多单止损 = 爆仓价格 * 此值，默认120%
-        - short_stop_loss_multiplier: 空单止损 = 爆仓价格 * 此值，默认80%
+        V2策略逻辑（新增）：
+        - BUY信号 + is_first_position=True：首仓开多
+        - BUY信号 + is_add_position=True：加仓多单（最多3次）
+        - SELL信号 + is_first_position=True：首仓开空
+        - SELL信号 + is_add_position=True：加仓空单（最多3次）
+        - REVERSE_TO_SHORT信号：平掉所有多仓 + 开空仓（反转）
+        - REVERSE_TO_LONG信号：平掉所有空仓 + 开多仓（反转）
 
         Args:
             signal: 交易信号
-            kline: 当前K线（可以是namedtuple或pd.Series）
+            kline: 当前K线
         """
         action = signal.get("action")
         
@@ -1044,22 +1067,28 @@ class BacktestEngine:
             open_time = kline["open_time"]
         reason = signal.get("reason", "")
 
-        # ===== 限价单价格偏差检测（新增）=====
+        # ===== V2新增：反转信号处理 =====
+        if action == "REVERSE_TO_SHORT":
+            self._handle_v2_reversal(signal, kline, "long_to_short", market_price, open_time)
+            return
+            
+        elif action == "REVERSE_TO_LONG":
+            self._handle_v2_reversal(signal, kline, "short_to_long", market_price, open_time)
+            return
+
+        # ===== 限价单价格偏差检测 =====
         if self.config.limit_order_enabled:
             target_price = signal.get("target_price")
             if target_price and target_price > 0:
-                # 计算价格偏差
                 deviation = abs(market_price - target_price) / target_price
 
                 if deviation > self.config.price_deviation_tolerance:
-                    # 价格偏差超过容忍度，取消交易
                     cancel_reason = (
                         f"限价单取消: 市场价{market_price:.2f} vs 目标价{target_price:.2f}, "
                         f"偏差={deviation*100:.3}% > 容忍度{self.config.price_deviation_tolerance*100:.1f}%"
                     )
                     logger.warning(f"[BacktestEngine] 🚫 {cancel_reason}")
 
-                    # 记录被取消的订单
                     cancelled_order = LimitOrder(
                         timestamp=open_time,
                         action=action,
@@ -1071,13 +1100,11 @@ class BacktestEngine:
                     )
                     self.limit_orders.append(cancelled_order)
                     self.cancelled_orders_count += 1
+                    return
 
-                    return  # 取消交易，不执行任何操作
-
-                # 价格偏差在可接受范围内，使用较优价格
                 if action == "BUY":
                     exec_price = min(market_price, target_price)
-                else:  # SELL
+                else:
                     exec_price = max(market_price, target_price)
 
                 logger.info(
@@ -1090,34 +1117,35 @@ class BacktestEngine:
         if not self._validate_signal(action, signal):
             return
 
-        # 从配置读取参数（支持自定义配置）
-        investment_ratio = self.config.investment_ratio  # 默认10%
-        leverage = self.config.leverage  # 默认50倍
+        # 从配置读取参数
+        investment_ratio = self.config.investment_ratio
+        leverage = signal.get("leverage", self.config.leverage)  # V2支持自定义杠杆
 
         if action == "BUY":
-            if self.long_position > 0:
+            is_add = signal.get("is_add_position", False)
+            
+            if self.long_position > 0 and not is_add:
                 logger.info(
                     f"[BacktestEngine] 🚫 已持有多单({self.long_position:.4f}个)，"
-                    f"忽略新BUY信号 @ ${market_price:.2f} (防止逆势加仓)"
+                    f"忽略新BUY信号 @ ${market_price:.2f}"
                 )
                 return
 
-            base_amount = self.balance * investment_ratio
-            resonance_ratio = signal.get("position_size_ratio", 0.7)
-            kelly_ratio = self._calculate_kelly_position_size(investment_ratio, signal)
-            position_size_ratio = resonance_ratio * kelly_ratio
-            actual_amount = base_amount * position_size_ratio
+            # V2加仓逻辑：使用较小的仓位（50%）
+            if is_add:
+                actual_amount = self.balance * investment_ratio * 0.5
+                add_num = self._get_strategy_entry_count() + 1
+                logger.info(f"[BacktestEngine] 📈 V2加仓多单 ({add_num}/3)")
+            else:
+                base_amount = self.balance * investment_ratio
+                resonance_ratio = signal.get("position_size_ratio", 1.0)
+                kelly_ratio = self._calculate_kelly_position_size(investment_ratio, signal)
+                position_size_ratio = resonance_ratio * kelly_ratio
+                actual_amount = base_amount * position_size_ratio
 
             if actual_amount <= 0:
                 logger.warning(f"[BacktestEngine] 余额不足或仓位比例为0，无法开多单")
                 return
-
-            logger.info(
-                f"[BacktestEngine] 仓位调整: "
-                f"基础金额${base_amount:.2f} × "
-                f"仓位比例{position_size_ratio*100:.0f}% ({signal.get('resonance_level', 'unknown')}) = "
-                f"实际投入${actual_amount:.2f}"
-            )
 
             if 'exec_price' in locals() and exec_price > 0:
                 final_exec_price = exec_price * (1 + self.config.slippage)
@@ -1129,50 +1157,46 @@ class BacktestEngine:
             liquidation_price = final_exec_price * (1 - 1/leverage)
             stop_loss_price = liquidation_price * self.config.long_stop_loss_multiplier
 
-            self._open_long(
-                open_time,
-                final_exec_price,
-                actual_amount,
-                reason
-            )
+            self.long_leverage = leverage
+            self._open_long(open_time, final_exec_price, actual_amount, reason)
+            
+            # 更新V2策略状态
+            entry_count = 0 if not is_add else self._get_strategy_entry_count() + 1
+            self._update_strategy_state("long", entry_count)
+            
             logger.info(
-                f"[BacktestEngine] 开多单成功: "
-                f"实际投入${actual_amount:.2f} (理论${base_amount:.2f}), "
-                f"仓位比例{position_size_ratio*100:.0f}%, "
-                f"共振级别:{signal.get('resonance_level', 'unknown')}, "
-                f"杠杆{leverage}x, "
-                f"数量{quantity:.4f}, "
-                f"开仓价{final_exec_price:.2f}, "
-                f"爆仓价{liquidation_price:.2f}, "
-                f"止损价{stop_loss_price:.2f} (爆仓价×{self.config.long_stop_loss_multiplier:.0f}%)"
+                f"[BacktestEngine] {'📈加仓' if is_add else '✅开多'}成功: "
+                f"投入${actual_amount:.2f}, 杠杆{leverage}x, 数量{quantity:.4f}, "
+                f"价格{final_exec_price:.2f}, 止损{stop_loss_price:.2f}"
             )
 
             self._init_long_stop_loss(final_exec_price)
 
         elif action == "SELL":
-            if self.short_position > 0:
+            is_add = signal.get("is_add_position", False)
+            
+            if self.short_position > 0 and not is_add:
                 logger.info(
                     f"[BacktestEngine] 🚫 已持有空单({self.short_position:.4f}个)，"
-                    f"忽略新SELL信号 @ ${market_price:.2f} (防止逆势加仓)"
+                    f"忽略新SELL信号 @ ${market_price:.2f}"
                 )
                 return
 
-            base_amount = self.balance * investment_ratio
-            resonance_ratio = signal.get("position_size_ratio", 0.7)
-            kelly_ratio = self._calculate_kelly_position_size(investment_ratio, signal)
-            position_size_ratio = resonance_ratio * kelly_ratio
-            actual_amount = base_amount * position_size_ratio
+            # V2加仓逻辑：使用较小的仓位（50%）
+            if is_add:
+                actual_amount = self.balance * investment_ratio * 0.5
+                add_num = self._get_strategy_entry_count() + 1
+                logger.info(f"[BacktestEngine] 📉 V2加仓空单 ({add_num}/3)")
+            else:
+                base_amount = self.balance * investment_ratio
+                resonance_ratio = signal.get("position_size_ratio", 1.0)
+                kelly_ratio = self._calculate_kelly_position_size(investment_ratio, signal)
+                position_size_ratio = resonance_ratio * kelly_ratio
+                actual_amount = base_amount * position_size_ratio
 
             if actual_amount <= 0:
                 logger.warning(f"[BacktestEngine] 余额不足或仓位比例为0，无法开空单")
                 return
-
-            logger.info(
-                f"[BacktestEngine] 仓位调整: "
-                f"基础金额${base_amount:.2f} × "
-                f"仓位比例{position_size_ratio*100:.0f}% ({signal.get('resonance_level', 'unknown')}) = "
-                f"实际投入${actual_amount:.2f}"
-            )
 
             if 'exec_price' in locals() and exec_price > 0:
                 final_exec_price = exec_price * (1 - self.config.slippage)
@@ -1184,26 +1208,118 @@ class BacktestEngine:
             liquidation_price = final_exec_price * (1 + 1/leverage)
             stop_loss_price = liquidation_price * self.config.short_stop_loss_multiplier
 
-            self._open_short(
-                open_time,
-                market_price,
-                self.config.investment_ratio,
-                self.config.leverage,
-                signal.get("reason", "SELL信号开空")
-            )
+            self.short_leverage = leverage
+            self._open_short(open_time, final_exec_price, investment_ratio, leverage, reason)
+            
+            # 更新V2策略状态
+            entry_count = 0 if not is_add else self._get_strategy_entry_count() + 1
+            self._update_strategy_state("short", entry_count)
+            
             logger.info(
-                f"[BacktestEngine] 开空单成功: "
-                f"实际投入${actual_amount:.2f} (理论${base_amount:.2f}), "
-                f"仓位比例{position_size_ratio*100:.0f}%, "
-                f"共振级别:{signal.get('resonance_level', 'unknown')}, "
-                f"杠杆{leverage}x, "
-                f"数量{quantity:.4f}, "
-                f"开仓价{final_exec_price:.2f}, "
-                f"爆仓价{liquidation_price:.2f}, "
-                f"止损价{stop_loss_price:.2f} (爆仓价×{self.config.short_stop_loss_multiplier:.0f}%)"
+                f"[BacktestEngine] {'📉加仓' if is_add else '✅开空'}成功: "
+                f"投入${actual_amount:.2f}, 杠杆{leverage}x, 数量{quantity:.4f}, "
+                f"价格{final_exec_price:.2f}, 止损{stop_loss_price:.2f}"
             )
 
             self._init_short_stop_loss(final_exec_price)
+
+    def _handle_v2_reversal(
+        self,
+        signal: Dict[str, Any],
+        kline,
+        reversal_type: str,
+        market_price: float,
+        open_time
+    ) -> None:
+        """
+        处理V2反转信号（平仓+反向开仓）
+        
+        Args:
+            signal: 反转信号字典
+            kline: 当前K线
+            reversal_type: 反转类型 ("long_to_short" 或 "short_to_long")
+            market_price: 当前市场价格
+            open_time: K线时间戳
+        """
+        close_reason = signal.get("close_reason", "反转平仓")
+        new_action = signal.get("new_action")
+        new_entry_price = signal.get("new_entry_price", market_price)
+        new_stop_loss = signal.get("new_stop_loss")
+        leverage = signal.get("leverage", self.config.leverage)
+        
+        logger.info(f"[BacktestEngine] 🔄 执行V2反转: {reversal_type}")
+        logger.info(f"[BacktestEngine] 平仓原因: {close_reason}")
+        
+        if reversal_type == "long_to_short":
+            # 平掉所有多仓
+            if self.long_position > 0:
+                self._close_long(open_time, market_price, close_reason)
+                logger.info(f"[BacktestEngine] ✅ 已平掉全部多仓: {self.long_position:.4f}个")
+            
+            # 开空单
+            investment_ratio = self.config.investment_ratio
+            actual_amount = self.balance * investment_ratio
+            
+            if actual_amount > 0:
+                final_exec_price = new_entry_price * (1 - self.config.slippage)
+                quantity = (actual_amount * leverage) / final_exec_price
+                
+                self.short_leverage = leverage
+                self._open_short(open_time, final_exec_price, investment_ratio, leverage, 
+                               f"反转开空 - {close_reason}")
+                
+                # 重置策略状态为空单首仓
+                self._update_strategy_state("short", 0)
+                
+                logger.info(
+                    f"[BacktestEngine] 🔄 反转开空成功: "
+                    f"投入${actual_amount:.2f}, 价格{final_exec_price:.2f}, 数量{quantity:.4f}"
+                )
+                self._init_short_stop_loss(final_exec_price)
+                
+        elif reversal_type == "short_to_long":
+            # 平掉所有空仓
+            if self.short_position > 0:
+                self._close_short(open_time, market_price, close_reason)
+                logger.info(f"[BacktestEngine] ✅ 已平掉全部空仓: {self.short_position:.4f}个")
+            
+            # 开多单
+            investment_ratio = self.config.investment_ratio
+            actual_amount = self.balance * investment_ratio
+            
+            if actual_amount > 0:
+                final_exec_price = new_entry_price * (1 + self.config.slippage)
+                quantity = (actual_amount * leverage) / final_exec_price
+                
+                self.long_leverage = leverage
+                self._open_long(open_time, final_exec_price, actual_amount, 
+                               f"反转开多 - {close_reason}")
+                
+                # 重置策略状态为多单首仓
+                self._update_strategy_state("long", 0)
+                
+                logger.info(
+                    f"[BacktestEngine] 🔄 反转开多成功: "
+                    f"投入${actual_amount:.2f}, 价格{final_exec_price:.2f}, 数量{quantity:.4f}"
+                )
+                self._init_long_stop_loss(final_exec_price)
+
+    def _get_strategy_entry_count(self) -> int:
+        """获取当前策略的加仓次数"""
+        if hasattr(self.strategy, 'position_state'):
+            return self.strategy.position_state.entry_count
+        return 0
+
+    def _update_strategy_state(self, direction: Optional[str], entry_count: int = 0) -> None:
+        """
+        更新V2策略的持仓状态
+        
+        Args:
+            direction: 持仓方向 ("long", "short", 或 None)
+            entry_count: 加仓次数
+        """
+        if hasattr(self.strategy, 'update_position_state'):
+            self.strategy.update_position_state(direction, entry_count)
 
     def _validate_signal(self, action: str, signal: Dict[str, Any]) -> bool:
         """
@@ -1251,7 +1367,8 @@ class BacktestEngine:
         if amount <= 0 or price <= 0:
             return
 
-        buy_qty = amount / price * (1 - self.config.commission)
+        leverage = self.long_leverage
+        buy_qty = amount * leverage / price * (1 - self.config.commission)
         if buy_qty <= 0:
             return
 
@@ -1263,6 +1380,7 @@ class BacktestEngine:
 
         self.long_position += buy_qty
         self.balance -= amount
+        self.long_margin_amount += amount
 
         trade = TradeRecord(
             timestamp=timestamp,
@@ -1314,7 +1432,13 @@ class BacktestEngine:
         else:
             self.consecutive_losses = 0
 
-        self.balance += proceeds
+        if self.long_leverage > 1:
+            margin = self.long_margin_amount
+            self.balance += margin + profit
+            self.long_margin_amount = 0.0
+            self.long_leverage = 1
+        else:
+            self.balance += proceeds
         self.long_position = 0.0
         self.long_avg_price = 0.0
 
@@ -1373,7 +1497,7 @@ class BacktestEngine:
             logger.warning(f"[SHORT] 余额不足，无法开空单 (余额={self.balance:.2f}, 需要={actual_amount:.2f})")
             return
 
-        sell_qty = actual_amount / exec_price * (1 - self.config.commission)
+        sell_qty = actual_amount * leverage / exec_price * (1 - self.config.commission)
         if sell_qty <= 0:
             return
 
@@ -1385,6 +1509,7 @@ class BacktestEngine:
 
         self.short_position += sell_qty
         self.balance -= actual_amount
+        self.short_margin_amount += actual_amount
 
         trade = TradeRecord(
             timestamp=timestamp,
@@ -1442,7 +1567,13 @@ class BacktestEngine:
         else:
             self.consecutive_losses = 0
 
-        self.balance += proceeds
+        if self.short_leverage > 1:
+            margin = self.short_margin_amount
+            self.balance += margin + profit
+            self.short_margin_amount = 0.0
+            self.short_leverage = 1
+        else:
+            self.balance += proceeds
         self.short_position = 0.0
         self.short_avg_price = 0.0
 
