@@ -68,17 +68,14 @@ class BinanceRestClient:
             if method == "GET":
                 async with session.get(url, params=params, headers=headers, timeout=30) as response:
                     result = await response.json()
-                    logger.info(f"[{method}] {path} Response: {result}")
                     return result
             elif method == "POST":
                 async with session.post(url, json=body, params=params, headers=headers, timeout=30) as response:
                     result = await response.json()
-                    logger.info(f"[{method}] {path} Response: {result}")
                     return result
             elif method == "DELETE":
                 async with session.delete(url, params=params, headers=headers, timeout=30) as response:
                     result = await response.json()
-                    logger.info(f"[{method}] {path} Response: {result}")
                     return result
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")

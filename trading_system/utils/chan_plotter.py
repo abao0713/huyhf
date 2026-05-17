@@ -373,210 +373,139 @@ class ChanPlotter:
 
         logger.info("[ChanPlotter] 已绘制均线: MA20(蓝), MA60(橙), MA120(紫)")
 
+    def _get_signal_style(self, signal_type):
+        """
+        根据信号类型返回绘图样式
+
+        Returns:
+            (marker, color, edgecolor, label, facecolor, marker_size)
+        """
+        styles = {
+            "OPEN_LONG": (
+                "^", "deepskyblue", "blue", "做多", "lightcyan", 220
+            ),
+            "OPEN_SHORT": (
+                "v", "darkorange", "darkred", "做空", "navajowhite", 220
+            ),
+            "PARTIAL_CLOSE": (
+                "D", "mediumpurple", "purple", "平60%", "lavender", 180
+            ),
+            "CLOSE_REMAINING": (
+                "s", "sienna", "brown", "平剩余", "bisque", 180
+            ),
+            "STOP_LOSS": (
+                "X", "red", "darkred", "止损", "mistyrose", 200
+            ),
+        }
+        return styles.get(signal_type, ("o", "gray", "black", "信号", "white", 150))
+
     def _plot_signals(self):
         """
-        绘制交易信号（买入/卖出操作点）
-        
-        确保所有交易信号都清晰显示在图表上，包括：
-        - 买入信号：红色▲标记 + 文字说明
-        - 卖出信号：绿色▼标记 + 文字说明
+        绘制交易信号（做多/做空/平仓60%/剩余平仓/止损）
+
+        每种信号有独立的图形标识，并显示具体价格。
         """
         if not self.signals:
             logger.warning("没有交易信号需要绘制")
             return
-        
+
         df = self.kline_data.reset_index(drop=True)
-        
-        # 创建时间戳到索引的映射
+
         timestamp_to_idx = {}
         for idx, row in df.iterrows():
             if 'open_time' in row:
                 timestamp = pd.to_datetime(row['open_time'])
                 timestamp_to_idx[timestamp] = idx
-        
+
         logger.info(f"开始绘制 {len(self.signals)} 个交易信号")
-        
+
+        used_labels = set()
+
         for i, signal in enumerate(self.signals):
             action = signal.get('action', '')
             reason = signal.get('reason', '')
-            
-            # 跳过无效信号
+            signal_type = signal.get('signal_type', '')
+            trade_price = signal.get('price', 0)
+
             if action not in ['BUY', 'SELL']:
                 continue
-            
-            # 确定信号位置
+
             signal_idx = None
-            
-            # 方法1: 尝试通过timestamp定位
+
             if 'timestamp' in signal and signal['timestamp']:
                 try:
                     signal_time = pd.to_datetime(signal['timestamp'])
-                    # 查找最接近的K线时间
                     for ts in sorted(timestamp_to_idx.keys()):
                         if ts >= signal_time:
                             signal_idx = timestamp_to_idx[ts]
                             break
                 except Exception as e:
                     logger.warning(f"信号 {i} 时间解析失败: {e}")
-            
-            # 方法2: 如果没有timestamp或解析失败，使用索引分布策略
+
             if signal_idx is None:
-                # 将信号均匀分布在图表上
-                total_signals = len([s for s in self.signals if s.get('action') in ['BUY', 'SELL']])
+                valid_signals = [s for s in self.signals if s.get('action') in ['BUY', 'SELL']]
+                total_signals = len(valid_signals)
                 current_signal_num = len([s for j, s in enumerate(self.signals[:i+1]) if s.get('action') in ['BUY', 'SELL']])
-                
-                # 计算位置（避免所有信号都在最后）
                 position_ratio = current_signal_num / max(total_signals, 1)
                 signal_idx = int(position_ratio * (len(df) - 1))
-                
-                # 确保索引在有效范围内
                 signal_idx = max(0, min(signal_idx, len(df) - 1))
-            
-            # 验证索引有效性
+
             if signal_idx is None or signal_idx >= len(df):
                 logger.warning(f"信号 {i} 索引无效: {signal_idx}")
                 continue
-            
-            # 绘制买入信号
+
+            marker, color, edgecolor, type_label, facecolor, marker_size = self._get_signal_style(signal_type)
+
             if action == 'BUY':
-                # 买入信号标记（在最低价下方）
                 low_price = df.iloc[signal_idx]['low']
-                price = low_price * 0.995
-
-                self.ax.scatter(
-                    [signal_idx],
-                    [price],
-                    marker='^',
-                    color='red',
-                    s=200,
-                    zorder=6,
-                    label='买入信号' if i == 0 else "",
-                    edgecolors='darkred',
-                    linewidths=2
-                )
-
-                resonance_level = signal.get('resonance_level', 'none')
-
-                # 根据共振级别选择颜色和标记
-                if resonance_level == "strong":
-                    marker_color = 'green'
-                    star_marker = "★"
-                elif resonance_level == "normal":
-                    marker_color = 'yellow'
-                    star_marker = "○"
-                elif resonance_level == "weak":
-                    marker_color = 'red'
-                    star_marker = "△"
-                else:
-                    marker_color = 'gray'
-                    star_marker = "○"
-
-                # 添加星级标注文字
-                self.ax.annotate(
-                    f"{star_marker}",
-                    xy=(signal_idx, price),
-                    xytext=(signal_idx + 3, price),
-                    fontsize=12,
-                    fontweight='bold',
-                    color=marker_color,
-                    ha='left'
-                )
-
-                # 添加文字标注
-                self.ax.annotate(
-                    f"买\n{reason[:10]}",
-                    xy=(signal_idx, price),
-                    xytext=(signal_idx + 5, price - 5),
-                    fontsize=9,
-                    color='red',
-                    fontweight='bold',
-                    ha='left',
-                    va='top',
-                    bbox=dict(
-                        boxstyle='round,pad=0.3',
-                        facecolor='lightyellow',
-                        edgecolor='red',
-                        alpha=0.9
-                    ),
-                    arrowprops=dict(
-                        arrowstyle='->',
-                        color='red',
-                        connectionstyle='arc3,rad=0'
-                    )
-                )
-                
-                logger.info(f"绘制买入信号 {i}: 位置={signal_idx}, 价格={price:.2f}, 原因={reason}")
-            
-            # 绘制卖出信号
-            elif action == 'SELL':
-                # 卖出信号标记（在最高价上方）
+                y_pos = low_price * 0.995
+            else:
                 high_price = df.iloc[signal_idx]['high']
-                price = high_price * 1.005
+                y_pos = high_price * 1.005
 
-                self.ax.scatter(
-                    [signal_idx],
-                    [price],
-                    marker='v',
-                    color='green',
-                    s=200,
-                    zorder=6,
-                    label='卖出信号' if i == 0 else "",
-                    edgecolors='darkgreen',
-                    linewidths=2
+            show_label = type_label if type_label not in used_labels else ""
+            if show_label:
+                used_labels.add(type_label)
+
+            self.ax.scatter(
+                [signal_idx],
+                [y_pos],
+                marker=marker,
+                color=color,
+                s=marker_size,
+                zorder=6,
+                label=show_label,
+                edgecolors=edgecolor,
+                linewidths=2
+            )
+
+            short_reason = reason[:8] if reason else ""
+            price_str = f"${trade_price:.2f}" if trade_price else ""
+
+            self.ax.annotate(
+                f"{type_label}\n{price_str}",
+                xy=(signal_idx, y_pos),
+                xytext=(signal_idx + 5, y_pos + (5 if action == 'SELL' else -5)),
+                fontsize=9,
+                color=color,
+                fontweight='bold',
+                ha='left',
+                va='bottom' if action == 'SELL' else 'top',
+                bbox=dict(
+                    boxstyle='round,pad=0.3',
+                    facecolor=facecolor,
+                    edgecolor=edgecolor,
+                    alpha=0.9
+                ),
+                arrowprops=dict(
+                    arrowstyle='->',
+                    color=color,
+                    connectionstyle='arc3,rad=0'
                 )
+            )
 
-                resonance_level = signal.get('resonance_level', 'none')
+            logger.info(f"绘制{type_label} {i}: 位置={signal_idx}, 价格={y_pos:.2f}, 原因={reason}")
 
-                # 根据共振级别选择颜色和标记
-                if resonance_level == "strong":
-                    marker_color = 'green'
-                    star_marker = "★"
-                elif resonance_level == "normal":
-                    marker_color = 'yellow'
-                    star_marker = "○"
-                elif resonance_level == "weak":
-                    marker_color = 'red'
-                    star_marker = "△"
-                else:
-                    marker_color = 'gray'
-                    star_marker = "○"
-
-                # 添加星级标注文字
-                self.ax.annotate(
-                    f"{star_marker}",
-                    xy=(signal_idx, price),
-                    xytext=(signal_idx + 3, price),
-                    fontsize=12,
-                    fontweight='bold',
-                    color=marker_color,
-                    ha='left'
-                )
-
-                # 添加文字标注
-                self.ax.annotate(
-                    f"卖\n{reason[:10]}",
-                    xy=(signal_idx, price),
-                    xytext=(signal_idx + 5, price + 5),
-                    fontsize=9,
-                    color='green',
-                    fontweight='bold',
-                    ha='left',
-                    va='bottom',
-                    bbox=dict(
-                        boxstyle='round,pad=0.3',
-                        facecolor='lightcyan',
-                        edgecolor='green',
-                        alpha=0.9
-                    ),
-                    arrowprops=dict(
-                        arrowstyle='->',
-                        color='green',
-                        connectionstyle='arc3,rad=0'
-                    )
-                )
-                
-                logger.info(f"绘制卖出信号 {i}: 位置={signal_idx}, 价格={price:.2f}, 原因={reason}")
-        
         logger.info(f"交易信号绘制完成")
 
     def _setup_plot_properties(self):

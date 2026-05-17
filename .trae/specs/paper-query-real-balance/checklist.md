@@ -1,0 +1,6 @@
+- [x] PaperTradingClient.initialize() 调用 get_account() 查询余额
+- [x] 查询成功时 _balance = _initial_balance = 查询到的余额
+- [x] 查询失败时回退到 $10,000 默认值，记录 WARNING 日志
+- [x] --initial-balance CLI 参数已从 run_ethusdc_mtf_live.py 移除
+- [x] PaperTradingClient 构造函数不再接收 initial_balance 参数（或改为可选默认）
+- [x] python -m py_compile 两个文件均通过

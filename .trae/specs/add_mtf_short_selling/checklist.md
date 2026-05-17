@@ -1,0 +1,25 @@
+# Checklist
+
+- [x] 构造函数新增 `resistance_levels`、`resistance_threshold`、`profit_loss_ratio` 参数，默认值合理
+- [x] `initialize()` 日志输出包含阻力位配置信息
+- [x] `_check_resistance_zone()` 正确检测价格 >= 阻力位 - 阈值
+- [x] `_check_30m_top_fractal()` 正确检测 K2.high > K1.high AND K2.close < K2.open * 1.5
+- [x] `_check_15m_top_divergence()` 正确检测价格新高 + MACD未新高
+- [x] `_check_15m_bearish_candlestick()` 能识别黄昏之星、看跌吞没、射击之星、乌云盖顶
+- [x] `_check_15m_trendline_break_down()` 正确判断收盘价跌破上升趋势线
+- [x] `_check_15m_death_cross()` 正确检测MACD死叉和KDJ高位死叉(K>80)
+- [x] `_check_15m_short_signals()` 汇总4类信号，返回满足数>=2才触发
+- [x] `_generate_short_entry_signal()` 包含止盈价: 入场-(止损-入场)*盈亏比
+- [x] `_generate_short_confirm_signal()` K3收盘<K2最低价触发加仓
+- [x] `generate_signal()` 空仓时同时检测做多和做空：满足数多者优先，相同时做多优先
+- [x] `update_position_from_signal()` 支持 "short" direction
+- [x] `clear_position()` 支持双向清仓
+- [x] `_check_daily_trend_for_short()` 日线多头趋势降仓50%
+- [x] `_check_strong_rally_avoid()` 连续3阳线涨0.5%拒绝做空
+- [x] `_check_volume_shrinkage()` 15m成交量<20周期60%降仓50%
+- [x] Executor `_open_short_probe()` 做空开仓使用 "SELL" side + "SHORT" position_side
+- [x] Executor `_add_short_confirm()` 做空加仓逻辑
+- [x] Executor `_execute_signal()` 分发 PROBE_ENTRY_SHORT / CONFIRM_ADD_SHORT
+- [x] `run_ethusdc_mtf_live.py` 支持 --resistance-levels 参数
+- [x] DryRunExecutor 支持做空信号日志输出
+- [x] dry-run 测试无Python异常，输出完整的做空检测日志

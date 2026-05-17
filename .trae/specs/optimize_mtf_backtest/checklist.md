@@ -1,0 +1,26 @@
+# Checklist
+
+- [x] `PositionState` 为 dataclass，包含 `direction`、`entry_count`、`avg_entry_price`、`total_position_size`、`stop_loss_price`、`probe_entry_price`、`confirm_added`、`k1_idx`、`k2_idx`、`k3_idx`
+- [x] 嵌入 `ChanStrategy` 实例，在 `inject_data()` 中调用 `_chan._process_data()` 获取分型
+- [x] `_check_30m_bottom_fractal()` 复用 `self.fractals` 而非仅看最近3根K线
+- [x] `_check_30m_top_fractal()` 复用 `self.fractals`
+- [x] 数据处理完成后输出摘要日志（分型数、笔数、ATR值）
+- [x] `_calculate_atr()` 正确实现（True Range + EMA(14)）
+- [x] 做多止损使用 `entry_price - atr * atr_multiplier` 而非固定偏移
+- [x] 做空止损使用 `entry_price + atr * atr_multiplier`
+- [x] 止损不低于做多爆仓价：`entry_price * (1 - 1/leverage)`
+- [x] 止损不高于做空爆仓价：`entry_price * (1 + 1/leverage)`
+- [x] 做多信号包含止盈价：`entry_price + (entry_price - stop_loss) * profit_loss_ratio`
+- [x] 做多方向日线空头趋势（EMA20<EMA60）降仓50%
+- [x] 做多方向成交量萎缩降仓50%
+- [x] `load_data_for_backtest(df_30m, df_15m, df_daily)` 方法存在且签名正确
+- [x] `generate_signal(bar_idx=None)` 接受 bar_idx 参数
+- [x] `generate_all_pending_signals(bar_idx)` 批量信号方法
+- [x] `extend_cooldown_after_loss(position_type)` 回调接口
+- [x] `_close_all_long()` 方法存在且正确调用 `place_order(side="SELL")`
+- [x] `_close_all_short()` 方法存在且正确调用 `place_order(side="BUY")`
+- [x] `_get_position_quantity()` 返回正确持仓数量
+- [x] `_execute_signal()` 支持 CLOSE_LONG / CLOSE_SHORT
+- [x] `run_backtest.py` 支持 `--strategy-version mtf`
+- [x] `run_ethusdc_mtf_backtest.py` 独立回测脚本存在
+- [x] 回测运行无Python异常，输出收益率、胜率、最大回撤

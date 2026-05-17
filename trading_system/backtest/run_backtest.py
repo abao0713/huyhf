@@ -1,9 +1,10 @@
 import argparse
 import json
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -93,14 +94,62 @@ def parse_args() -> argparse.Namespace:
         "--strategy-version",
         type=str,
         default="v1",
-        choices=["v1", "v2"],
-        help="策略版本（v1=原始背驰策略, v2=分型驱动策略）"
+        choices=["v1", "v2", "mtf"],
+        help="策略版本（v1=原始背驰策略, v2=分型驱动策略, mtf=多周期共振分型策略）"
+    )
+    parser.add_argument(
+        "--support-levels",
+        type=str,
+        default=None,
+        help="MTF策略: 关键支撑位列表，逗号分隔（例如：1950,1900,1850），留空则自动计算"
+    )
+    parser.add_argument(
+        "--resistance-levels",
+        type=str,
+        default=None,
+        help="MTF策略: 关键阻力位列表，逗号分隔（例如：2050,2100,2150），留空则自动计算"
     )
     parser.add_argument(
         "--max-add-positions",
         type=int,
         default=3,
         help="V2策略: 最大加仓次数（默认3次）"
+    )
+    parser.add_argument(
+        "--enable-early-entry",
+        action="store_true",
+        default=True,
+        help="MTF策略: 启用底分型提前做多"
+    )
+    parser.add_argument(
+        "--no-early-entry",
+        action="store_false",
+        dest="enable_early_entry",
+        help="MTF策略: 禁用底分型提前做多"
+    )
+    parser.add_argument(
+        "--enable-early-short-entry",
+        action="store_true",
+        default=True,
+        help="MTF策略: 启用顶分型提前做空"
+    )
+    parser.add_argument(
+        "--no-early-short-entry",
+        action="store_false",
+        dest="enable_early_short_entry",
+        help="MTF策略: 禁用顶分型提前做空"
+    )
+    parser.add_argument(
+        "--early-entry-min-confidence",
+        type=float,
+        default=0.6,
+        help="MTF策略: 提前入场最低置信度（默认0.6）"
+    )
+    parser.add_argument(
+        "--min-early-entry-conditions",
+        type=int,
+        default=2,
+        help="MTF策略: 提前入场所需最少条件数（默认2，范围1-3）"
     )
     
     return parser.parse_args()
@@ -180,6 +229,12 @@ def run_backtest(
     # V2策略参数
     strategy_version: str = "v1",
     max_add_positions: int = 3,
+    support_levels: Optional[List[float]] = None,
+    resistance_levels: Optional[List[float]] = None,
+    enable_early_entry: bool = True,
+    enable_early_short_entry: bool = True,
+    early_entry_min_confidence: float = 0.6,
+    min_early_entry_conditions: int = 2,
 ) -> Dict[str, Any]:
     """Run a Chan strategy backtest and persist the result.
     
@@ -250,6 +305,21 @@ def run_backtest(
         len(data["1d"]),
     )
 
+    if strategy_version == "mtf":
+        data_30m = engine.load_data(symbol, "30m", start_date=start_date, end_date=end_date)
+        if not data_30m or "30m" not in data_30m:
+            logger.error("30m data missing for MTF strategy")
+            return {}
+        logger.info("30m data: %s rows", len(data_30m["30m"]))
+        
+        extended_start = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=30)).strftime("%Y-%m-%d")
+        data_15m = engine.load_data(symbol, "15m", start_date=extended_start, end_date=end_date)
+        if not data_15m or "15m" not in data_15m:
+            logger.warning("15m data missing, early entry features disabled")
+            data_15m = {"15m": pd.DataFrame()}
+        else:
+            logger.info("15m data: %s rows (上下文扩展自 %s)", len(data_15m["15m"]), extended_start)
+
     # 根据版本选择策略
     if strategy_version == "v2":
         from trading_system.strategies.chan_strategy_v2 import ChanStrategyV2
@@ -263,11 +333,29 @@ def run_backtest(
             use_binance_client=False
         )
         logger.info("Using ChanStrategyV2 (Fractal-driven)")
+    elif strategy_version == "mtf":
+        from trading_system.strategies.mtf_fractal_strategy import MultiTFFractalStrategy
+        strategy = MultiTFFractalStrategy(
+            symbol=symbol,
+            leverage=leverage,
+            investment_ratio=investment_ratio,
+            support_levels=support_levels or [],
+            resistance_levels=resistance_levels or [],
+            enable_early_entry=enable_early_entry,
+            enable_early_short_entry=enable_early_short_entry,
+            early_entry_min_confidence=early_entry_min_confidence,
+            early_short_entry_min_confidence=early_entry_min_confidence,
+            min_early_entry_conditions=min_early_entry_conditions,
+        )
+        logger.info("Using MultiTFFractalStrategy (Multi-TF Fractal)")
     else:
         from trading_system.strategies.chan_strategy import ChanStrategy
         strategy = ChanStrategy(symbol=symbol, hg1=hg1, use_binance_client=False)
         logger.info("Using ChanStrategyV1 (Divergence-driven)")
     
+    if strategy_version == "mtf":
+        strategy.load_data_for_backtest(df_4h=data[interval], df_30m=data_30m["30m"], df_15m=data_15m.get("15m"), df_daily=data["1d"])
+
     results = engine.run_backtest(data, strategy, interval)
 
     if not results:
@@ -415,6 +503,12 @@ def main() -> None:
         # 传递V2策略参数
         strategy_version=args.strategy_version,
         max_add_positions=args.max_add_positions,
+        support_levels=[float(x.strip()) for x in args.support_levels.split(",")] if args.support_levels else None,
+        resistance_levels=[float(x.strip()) for x in args.resistance_levels.split(",")] if args.resistance_levels else None,
+        enable_early_entry=args.enable_early_entry,
+        enable_early_short_entry=args.enable_early_short_entry,
+        early_entry_min_confidence=args.early_entry_min_confidence,
+        min_early_entry_conditions=args.min_early_entry_conditions,
     )
 
     if not results:

@@ -64,15 +64,15 @@ class BacktestConfig:
 
     # 做多止盈止损（独立）
     long_take_profit_ratio: float = 0.04       # 做多止盈 4%
-    long_stop_loss_ratio: float = 0.05         # 做多止损 5%（4→5，减少误触）
-    long_trailing_stop_activation: float = 0.025  # 做多追踪止损激活 2.5%
-    long_trailing_stop_distance: float = 0.020  # 做多追踪止损距离 2%
+    long_stop_loss_ratio: float = 0.05         # 做多止损 5%
+    long_trailing_stop_activation: float = 0.02   # 做多追踪止损激活 2.0%
+    long_trailing_stop_distance: float = 0.025  # 做多追踪止损距离 2.5%
 
     # 做空止盈止损（独立）
     short_take_profit_ratio: float = 0.04       # 做空止盈 4%
-    short_stop_loss_ratio: float = 0.05         # 做空止损 5%（4→5，减少误触）
-    short_trailing_stop_activation: float = 0.025  # 做空追踪止损激活 2.5%
-    short_trailing_stop_distance: float = 0.020  # 做空追踪止损距离 2%
+    short_stop_loss_ratio: float = 0.05         # 做空止损 5%
+    short_trailing_stop_activation: float = 0.02   # 做空追踪止损激活 2.0%
+    short_trailing_stop_distance: float = 0.025  # 做空追踪止损距离 2.5%
 
     # 限价单配置（新增 - 价格偏差检测）
     limit_order_enabled: bool = True  # 是否启用限价单模式
@@ -476,6 +476,16 @@ class BacktestEngine:
             if not df_1d.empty:
                 df_1d = self._prepare_dataframe(df_1d)
 
+            # 加载30分钟数据（如果存在）
+            df_30m = data.get("30m", pd.DataFrame())
+            if not df_30m.empty:
+                df_30m = self._prepare_dataframe(df_30m)
+
+            # 加载15分钟数据（如果存在）
+            df_15m = data.get("15m", pd.DataFrame())
+            if not df_15m.empty:
+                df_15m = self._prepare_dataframe(df_15m)
+
             # 重置状态
             self._reset_state()
 
@@ -486,7 +496,9 @@ class BacktestEngine:
             strategy.use_binance_client = False
             
             # V2策略特殊处理：初始化并注入数据
-            if hasattr(strategy, 'load_data_for_backtest'):
+            # 跳过MTF策略，因为数据已在run_backtest.py中注入
+            from trading_system.strategies.mtf_fractal_strategy import MultiTFFractalStrategy
+            if hasattr(strategy, 'load_data_for_backtest') and not isinstance(strategy, MultiTFFractalStrategy):
                 logger.info("检测到V2策略，初始化并注入回测数据...")
                 
                 # 异步初始化策略（但不获取数据）
@@ -504,7 +516,7 @@ class BacktestEngine:
             daily_indices = self._prepare_daily_indices(df_interval, df_1d)
 
             # 执行回测循环
-            self._run_backtest_loop(df_interval, df_1d, daily_indices, strategy)
+            self._run_backtest_loop(df_interval, df_1d, daily_indices, strategy, df_30m, df_15m)
 
             # 计算绩效指标
             results = self._calculate_performance()
@@ -556,7 +568,9 @@ class BacktestEngine:
             df_interval: pd.DataFrame,
             df_1d: pd.DataFrame,
             daily_indices: np.ndarray,
-            strategy: ChanStrategy
+            strategy: ChanStrategy,
+            df_30m: pd.DataFrame = None,
+            df_15m: pd.DataFrame = None
     ) -> None:
         """
         执行回测循环
@@ -566,6 +580,7 @@ class BacktestEngine:
             df_1d: 日线数据
             daily_indices: 日线索引
             strategy: 交易策略
+            df_30m: 30分钟数据（可选）
         """
         # 创建进度条
         iterator = enumerate(zip(df_interval.itertuples(), daily_indices))
@@ -576,8 +591,18 @@ class BacktestEngine:
         for i, (kline, daily_end_idx) in iterator:
             # 更新策略数据
             if not df_1d.empty and daily_end_idx > 0:
-                strategy.df_30m = df_interval.iloc[:i + 1]
+                strategy.df_4h = df_interval.iloc[:i + 1]
                 strategy.df_daily = df_1d.iloc[:daily_end_idx]
+                
+            # 更新30分钟数据（如果提供）
+            if df_30m is not None and not df_30m.empty:
+                current_time = df_interval.iloc[i]['open_time']
+                strategy.df_30m = df_30m[df_30m['open_time'] <= current_time]
+
+            # 更新15分钟数据（如果提供）- 用于提前入场分析
+            if df_15m is not None and not df_15m.empty:
+                current_time = df_interval.iloc[i]['open_time']
+                strategy.df_15m = df_15m[df_15m['open_time'] <= current_time]
 
             # 处理数据
             try:
@@ -586,18 +611,18 @@ class BacktestEngine:
                 logger.warning("第%d根K线数据处理失败: %s", i, e)
                 continue
 
-            # 生成信号
-            signal = strategy.generate_signal(bar_idx=i)
-
             # 计算ATR（用于动态止损）
             if self.config.use_atr_stop_loss or self.config.use_trailing_stop:
                 self._calculate_current_atr(strategy)
 
-            # 检查止损止盈（分多空独立检查）
+            # 先检查止损止盈（优先于信号生成，避免止盈后仍发K3确认）
             if self.long_position > 0:
                 self._check_long_stop_loss(kline)
             if self.short_position > 0:
                 self._check_short_stop_loss(kline)
+
+            # 再生成信号（此时位置可能已被止损平掉，direction=None不会发K3确认）
+            signal = strategy.generate_signal(bar_idx=i)
 
             # 执行交易
             if signal and signal.get("action") != "HOLD":
@@ -666,10 +691,10 @@ class BacktestEngine:
             strategy: 策略对象（包含K线数据）
         """
         try:
-            if not hasattr(strategy, 'df_30m') or strategy.df_30m.empty:
+            if not hasattr(strategy, 'df_4h') or strategy.df_4h.empty:
                 return
 
-            df = strategy.df_30m
+            df = strategy.df_4h
             period = self.config.atr_period
 
             if len(df) < period + 1:
@@ -725,7 +750,7 @@ class BacktestEngine:
             if self.consecutive_losses >= 3:
                 adjusted_ratio = base_investment_ratio * 0.5
                 logger.warning(
-                    f"[BacktestEngine] ⚠️ 连续亏损{self.consecutive_losses}次，"
+                    f"[BacktestEngine] [WARN] 连续亏损{self.consecutive_losses}次，"
                     f"减半仓位至{adjusted_ratio*100:.1f}%"
                 )
                 return max(0.05, adjusted_ratio)
@@ -762,7 +787,7 @@ class BacktestEngine:
             kelly = max(0.05, min(kelly * 0.5, 0.25))  # 5%-25%
 
             logger.info(
-                f"[BacktestEngine] 📊 凯利公式: "
+                f"[BacktestEngine] [KELLY] 凯利公式: "
                 f"胜率={p*100:.1f}%, 盈亏比={b:.2f}, "
                 f"凯利值={kelly*100:.1f}%"
             )
@@ -834,6 +859,38 @@ class BacktestEngine:
             )
 
         self.short_is_trailing_active = False
+
+    def _init_long_stop_loss_from_signal(self, entry_price: float, stop_price: float) -> None:
+        """
+        使用策略信号中携带的止损价初始化多单止损
+
+        Args:
+            entry_price: 入场价格
+            stop_price: 策略计算的止损价格
+        """
+        self.long_initial_stop_loss_price = stop_price
+        self.long_trailing_stop_price = stop_price
+        self.long_highest_price = entry_price
+        self.long_is_trailing_active = False
+        logger.info(
+            f"[LONG] 使用策略止损价: 入场={entry_price:.2f}, 止损={stop_price:.2f}"
+        )
+
+    def _init_short_stop_loss_from_signal(self, entry_price: float, stop_price: float) -> None:
+        """
+        使用策略信号中携带的止损价初始化空单止损
+
+        Args:
+            entry_price: 入场价格
+            stop_price: 策略计算的止损价格
+        """
+        self.short_initial_stop_loss_price = stop_price
+        self.short_trailing_stop_price = stop_price
+        self.short_lowest_price = entry_price
+        self.short_is_trailing_active = False
+        logger.info(
+            f"[SHORT] 使用策略止损价: 入场={entry_price:.2f}, 止损={stop_price:.2f}"
+        )
 
     def _update_long_trailing_stop(self, current_price: float) -> None:
         """
@@ -921,32 +978,41 @@ class BacktestEngine:
 
         if hasattr(kline, 'close'):
             current_price = float(kline.close)
+            bar_low = float(kline.low)
             open_time = kline.open_time
         else:
             current_price = float(kline["close"])
+            bar_low = float(kline["low"])
             open_time = kline["open_time"]
 
         self._update_long_trailing_stop(current_price)
 
         effective_stop_loss = self.long_trailing_stop_price
 
-        if current_price <= effective_stop_loss:
-            profit_pct = (current_price - self.long_avg_price) / self.long_avg_price
+        if current_price <= effective_stop_loss or bar_low <= effective_stop_loss:
+            exit_price = min(current_price, effective_stop_loss)
+            profit_pct = (exit_price - self.long_avg_price) / self.long_avg_price
             if profit_pct > 0:
-                stop_reason = "止盈 (追踪止损锁定利润)"
+                stop_reason = f"止盈@{effective_stop_loss:.2f}"
             else:
-                stop_reason = "止损"
+                stop_reason = f"止损@{effective_stop_loss:.2f}"
 
             logger.info(
-                f"[LONG] {'✅止盈' if profit_pct > 0 else '🛑止损'}: "
+                f"[LONG] {'[TP]止盈' if profit_pct > 0 else '[SL]止损'}: "
                 f"盈亏={profit_pct*100:+.2f}%, "
-                f"开仓价={self.long_avg_price:.2f} -> 当前价={current_price:.2f}"
+                f"开仓价={self.long_avg_price:.2f} -> 成交价={exit_price:.2f}, "
+                f"K线最低={bar_low:.2f}"
             )
 
-            self._close_long(open_time, current_price, f"[LONG] {stop_reason}")
+            self._close_long(open_time, exit_price, f"[LONG] {stop_reason}")
 
-            if profit_pct <= 0 and hasattr(self, 'strategy') and self.strategy:
-                self.strategy.extend_cooldown_after_loss("long")
+            if hasattr(self, 'strategy') and self.strategy:
+                if profit_pct <= 0:
+                    self.strategy.extend_cooldown_after_loss("long")
+                elif hasattr(self.strategy, 'on_profit'):
+                    self.strategy.on_profit()
+                if hasattr(self.strategy, 'clear_position'):
+                    self.strategy.clear_position()
 
             if profit_pct >= self.config.long_take_profit_ratio:
                 logger.info(
@@ -965,32 +1031,41 @@ class BacktestEngine:
 
         if hasattr(kline, 'close'):
             current_price = float(kline.close)
+            bar_high = float(kline.high)
             open_time = kline.open_time
         else:
             current_price = float(kline["close"])
+            bar_high = float(kline["high"])
             open_time = kline["open_time"]
 
         self._update_short_trailing_stop(current_price)
 
         effective_stop_loss = self.short_trailing_stop_price
 
-        if current_price >= effective_stop_loss:
-            profit_pct = (self.short_avg_price - current_price) / self.short_avg_price
+        if current_price >= effective_stop_loss or bar_high >= effective_stop_loss:
+            exit_price = max(current_price, effective_stop_loss)
+            profit_pct = (self.short_avg_price - exit_price) / self.short_avg_price
             if profit_pct > 0:
-                stop_reason = "止盈 (追踪止损锁定利润)"
+                stop_reason = f"止盈@{effective_stop_loss:.2f}"
             else:
-                stop_reason = "止损"
+                stop_reason = f"止损@{effective_stop_loss:.2f}"
 
             logger.info(
-                f"[SHORT] {'✅止盈' if profit_pct > 0 else '🛑止损'}: "
+                f"[SHORT] {'[TP]止盈' if profit_pct > 0 else '[SL]止损'}: "
                 f"盈亏={profit_pct*100:+.2f}%, "
-                f"开仓价={self.short_avg_price:.2f} -> 当前价={current_price:.2f}"
+                f"开仓价={self.short_avg_price:.2f} -> 成交价={exit_price:.2f}, "
+                f"K线最高={bar_high:.2f}"
             )
 
-            self._close_short(open_time, current_price, f"[SHORT] {stop_reason}")
+            self._close_short(open_time, exit_price, f"[SHORT] {stop_reason}")
 
-            if profit_pct <= 0 and hasattr(self, 'strategy') and self.strategy:
-                self.strategy.extend_cooldown_after_loss("short")
+            if hasattr(self, 'strategy') and self.strategy:
+                if profit_pct <= 0:
+                    self.strategy.extend_cooldown_after_loss("short")
+                elif hasattr(self.strategy, 'on_profit'):
+                    self.strategy.on_profit()
+                if hasattr(self.strategy, 'clear_position'):
+                    self.strategy.clear_position()
 
             if profit_pct >= self.config.short_take_profit_ratio:
                 logger.info(
@@ -1108,10 +1183,114 @@ class BacktestEngine:
                     exec_price = max(market_price, target_price)
 
                 logger.info(
-                    f"[BacktestEngine] ✅ 限价单通过: "
+                    f"[BacktestEngine] [OK] 限价单通过: "
                     f"市场价={market_price:.2f}, 目标价={target_price:.2f}, "
                     f"偏差={deviation*100:.3}%, 使用成交价={exec_price:.2f}"
                 )
+
+        # ===== MTF策略信号转换 =====
+        is_mtf_signal = False
+        mtf_position_ratio = signal.get("position_ratio", 0.4)
+        if action == "CLOSE_LONG":
+            if self.long_position > 0:
+                if hasattr(kline, 'close'):
+                    close_price = signal.get("price", float(kline.close))
+                    close_time = kline.open_time
+                else:
+                    close_price = signal.get("price", float(kline["close"]))
+                    close_time = kline["open_time"]
+                trade = self._close_long(close_time, close_price, signal.get("reason", "[LONG] 30m退出信号"))
+                if trade and trade.profit > 0 and hasattr(self.strategy, 'on_profit'):
+                    self.strategy.on_profit()
+                if hasattr(self, 'strategy') and self.strategy and hasattr(self.strategy, 'clear_position'):
+                    self.strategy.clear_position()
+                signal["action"] = "SELL"
+                signal["is_mtf_close_only"] = True
+                is_mtf_signal = True
+            else:
+                return
+        elif action == "CLOSE_SHORT":
+            if self.short_position > 0:
+                if hasattr(kline, 'close'):
+                    close_price = signal.get("price", float(kline.close))
+                    close_time = kline.open_time
+                else:
+                    close_price = signal.get("price", float(kline["close"]))
+                    close_time = kline["open_time"]
+                trade = self._close_short(close_time, close_price, signal.get("reason", "[SHORT] 30m退出信号"))
+                if trade and trade.profit > 0 and hasattr(self.strategy, 'on_profit'):
+                    self.strategy.on_profit()
+                if hasattr(self, 'strategy') and self.strategy and hasattr(self.strategy, 'clear_position'):
+                    self.strategy.clear_position()
+                signal["action"] = "SELL_SHORT"
+                signal["is_mtf_close_only"] = True
+                is_mtf_signal = True
+            else:
+                return
+        elif action == "PARTIAL_CLOSE_LONG":
+            if self.long_position > 0:
+                if hasattr(kline, 'close'):
+                    close_price = signal.get("price", float(kline.close))
+                    close_time = kline.open_time
+                else:
+                    close_price = signal.get("price", float(kline["close"]))
+                    close_time = kline["open_time"]
+                close_ratio = signal.get("close_ratio", 0.60)
+                trade = self._close_long_partial(close_time, close_price, signal.get("reason", "[LONG] 提前顶分型→平60%"), close_ratio)
+                if trade and trade.profit > 0 and hasattr(self.strategy, 'on_profit'):
+                    self.strategy.on_profit()
+                signal["action"] = "SELL"
+                signal["is_mtf_close_partial"] = True
+                is_mtf_signal = True
+            else:
+                return
+        elif action == "PARTIAL_CLOSE_SHORT":
+            if self.short_position > 0:
+                if hasattr(kline, 'close'):
+                    close_price = signal.get("price", float(kline.close))
+                    close_time = kline.open_time
+                else:
+                    close_price = signal.get("price", float(kline["close"]))
+                    close_time = kline["open_time"]
+                close_ratio = signal.get("close_ratio", 0.60)
+                trade = self._close_short_partial(close_time, close_price, signal.get("reason", "[SHORT] 提前底分型→平60%"), close_ratio)
+                if trade and trade.profit > 0 and hasattr(self.strategy, 'on_profit'):
+                    self.strategy.on_profit()
+                signal["action"] = "BUY"
+                signal["is_mtf_close_partial"] = True
+                is_mtf_signal = True
+            else:
+                return
+        elif action == "PROBE_ENTRY":
+            signal["action"] = "BUY"
+            signal["position_size_ratio"] = mtf_position_ratio
+            is_mtf_signal = True
+        elif action == "CONFIRM_ADD":
+            signal["action"] = "BUY"
+            signal["is_add_position"] = True
+            signal["mtf_add_ratio"] = mtf_position_ratio
+            is_mtf_signal = True
+        elif action == "PROBE_ENTRY_SHORT":
+            signal["action"] = "SELL"
+            signal["position_size_ratio"] = mtf_position_ratio
+            is_mtf_signal = True
+        elif action == "CONFIRM_ADD_SHORT":
+            signal["action"] = "SELL"
+            signal["is_add_position"] = True
+            signal["mtf_add_ratio"] = mtf_position_ratio
+            is_mtf_signal = True
+        elif action == "EARLY_ENTRY":
+            signal["action"] = "BUY"
+            signal["position_size_ratio"] = signal.get("position_ratio", 0.25)
+            signal["is_early_entry"] = True
+            is_mtf_signal = True
+        elif action == "EARLY_SHORT_ENTRY":
+            signal["action"] = "SELL"
+            signal["position_size_ratio"] = signal.get("position_ratio", 0.25)
+            signal["is_early_short_entry"] = True
+            is_mtf_signal = True
+
+        action = signal.get("action")
 
         # 验证信号有效性
         if not self._validate_signal(action, signal):
@@ -1133,9 +1312,10 @@ class BacktestEngine:
 
             # V2加仓逻辑：使用较小的仓位（50%）
             if is_add:
-                actual_amount = self.balance * investment_ratio * 0.5
+                mtf_add_ratio = signal.get("mtf_add_ratio", 0.5)
+                actual_amount = self.balance * investment_ratio * mtf_add_ratio
                 add_num = self._get_strategy_entry_count() + 1
-                logger.info(f"[BacktestEngine] 📈 V2加仓多单 ({add_num}/3)")
+                logger.info(f"[BacktestEngine] [LONG] V2加仓多单 ({add_num}/3)")
             else:
                 base_amount = self.balance * investment_ratio
                 resonance_ratio = signal.get("position_size_ratio", 1.0)
@@ -1165,14 +1345,23 @@ class BacktestEngine:
             self._update_strategy_state("long", entry_count)
             
             logger.info(
-                f"[BacktestEngine] {'📈加仓' if is_add else '✅开多'}成功: "
+                f"[BacktestEngine] {'[ADD]加仓' if is_add else '[LONG]开多'}成功: "
                 f"投入${actual_amount:.2f}, 杠杆{leverage}x, 数量{quantity:.4f}, "
                 f"价格{final_exec_price:.2f}, 止损{stop_loss_price:.2f}"
             )
 
-            self._init_long_stop_loss(final_exec_price)
+            strategy_stop = signal.get("stop_loss", 0)
+            if strategy_stop > 0 and strategy_stop < final_exec_price:
+                self._init_long_stop_loss_from_signal(final_exec_price, strategy_stop)
+            else:
+                self._init_long_stop_loss(final_exec_price)
+
+            if is_mtf_signal and hasattr(self.strategy, 'update_position_from_signal'):
+                self.strategy.update_position_from_signal(signal)
 
         elif action == "SELL":
+            if signal.get("is_mtf_close_only"):
+                return
             is_add = signal.get("is_add_position", False)
             
             if self.short_position > 0 and not is_add:
@@ -1184,9 +1373,10 @@ class BacktestEngine:
 
             # V2加仓逻辑：使用较小的仓位（50%）
             if is_add:
-                actual_amount = self.balance * investment_ratio * 0.5
+                mtf_add_ratio = signal.get("mtf_add_ratio", 0.5)
+                actual_amount = self.balance * investment_ratio * mtf_add_ratio
                 add_num = self._get_strategy_entry_count() + 1
-                logger.info(f"[BacktestEngine] 📉 V2加仓空单 ({add_num}/3)")
+                logger.info(f"[BacktestEngine] [SHORT] V2加仓空单 ({add_num}/3)")
             else:
                 base_amount = self.balance * investment_ratio
                 resonance_ratio = signal.get("position_size_ratio", 1.0)
@@ -1216,12 +1406,19 @@ class BacktestEngine:
             self._update_strategy_state("short", entry_count)
             
             logger.info(
-                f"[BacktestEngine] {'📉加仓' if is_add else '✅开空'}成功: "
+                f"[BacktestEngine] {'[ADD]加仓' if is_add else '[SHORT]开空'}成功: "
                 f"投入${actual_amount:.2f}, 杠杆{leverage}x, 数量{quantity:.4f}, "
                 f"价格{final_exec_price:.2f}, 止损{stop_loss_price:.2f}"
             )
 
-            self._init_short_stop_loss(final_exec_price)
+            strategy_stop = signal.get("stop_loss", 0)
+            if strategy_stop > 0 and strategy_stop > final_exec_price:
+                self._init_short_stop_loss_from_signal(final_exec_price, strategy_stop)
+            else:
+                self._init_short_stop_loss(final_exec_price)
+
+            if is_mtf_signal and hasattr(self.strategy, 'update_position_from_signal'):
+                self.strategy.update_position_from_signal(signal)
 
     def _handle_v2_reversal(
         self,
@@ -1254,7 +1451,7 @@ class BacktestEngine:
             # 平掉所有多仓
             if self.long_position > 0:
                 self._close_long(open_time, market_price, close_reason)
-                logger.info(f"[BacktestEngine] ✅ 已平掉全部多仓: {self.long_position:.4f}个")
+                logger.info(f"[BacktestEngine] [OK] 已平掉全部多仓: {self.long_position:.4f}个")
             
             # 开空单
             investment_ratio = self.config.investment_ratio
@@ -1281,7 +1478,7 @@ class BacktestEngine:
             # 平掉所有空仓
             if self.short_position > 0:
                 self._close_short(open_time, market_price, close_reason)
-                logger.info(f"[BacktestEngine] ✅ 已平掉全部空仓: {self.short_position:.4f}个")
+                logger.info(f"[BacktestEngine] [OK] 已平掉全部空仓: {self.short_position:.4f}个")
             
             # 开多单
             investment_ratio = self.config.investment_ratio
@@ -1337,7 +1534,9 @@ class BacktestEngine:
         Returns:
             信号是否有效
         """
-        if action not in ["BUY", "SELL"]:
+        if action not in ["BUY", "SELL", "PROBE_ENTRY", "CONFIRM_ADD",
+                           "PROBE_ENTRY_SHORT", "CONFIRM_ADD_SHORT",
+                           "CLOSE_LONG", "CLOSE_SHORT"]:
             return False
 
         # 连续循环交易模式下，不再阻止以下情况：
@@ -1466,6 +1665,56 @@ class BacktestEngine:
         logger.info(
             "[LONG] 平多 %.4f @ %.2f, 利润: %.2f (%.2f%%), 原因: %s",
             qty, price, profit, profit_pct, reason
+        )
+
+        return trade
+
+    def _close_long_partial(
+            self,
+            timestamp: datetime,
+            price: float,
+            reason: str,
+            close_ratio: float = 0.60
+    ) -> Optional[TradeRecord]:
+        if self.long_position <= 0 or price <= 0:
+            return None
+
+        qty = self.long_position * close_ratio
+        proceeds = qty * price * (1 - self.config.commission)
+        cost = qty * self.long_avg_price
+        profit = proceeds - cost
+        profit_pct = (profit / cost * 100) if cost > 0 else 0.0
+
+        if profit < 0:
+            self.consecutive_losses += 1
+            self.max_consecutive_losses = max(
+                self.max_consecutive_losses, self.consecutive_losses
+            )
+        else:
+            self.consecutive_losses = 0
+
+        self.balance += proceeds
+        self.long_position -= qty
+
+        trade = TradeRecord(
+            timestamp=timestamp,
+            action="SELL",
+            price=price,
+            amount=qty,
+            balance=self.balance,
+            position=float(self.long_position - self.short_position),
+            equity=self.balance + self.long_position * price - self.short_position * price,
+            profit=profit,
+            profit_pct=profit_pct,
+            reason=reason,
+            long_position=self.long_position,
+            short_position=self.short_position
+        )
+        self.trades.append(trade)
+
+        logger.info(
+            "[LONG] 部分平多 %.4f (%.0f%%) @ %.2f, 剩余%.4f, 利润: %.2f (%.2f%%), 原因: %s",
+            qty, close_ratio * 100, price, self.long_position, profit, profit_pct, reason
         )
 
         return trade
@@ -1601,6 +1850,56 @@ class BacktestEngine:
         logger.info(
             "[SHORT] 平空 %.4f @ %.2f, 利润: %.2f (%.2f%%), 原因: %s",
             qty, price, profit, profit_pct, reason
+        )
+
+        return trade
+
+    def _close_short_partial(
+            self,
+            timestamp: datetime,
+            price: float,
+            reason: str,
+            close_ratio: float = 0.60
+    ) -> Optional[TradeRecord]:
+        if self.short_position <= 0 or price <= 0:
+            return None
+
+        qty = self.short_position * close_ratio
+        proceeds = qty * price * (1 - self.config.commission)
+        cost = qty * self.short_avg_price
+        profit = cost - proceeds
+        profit_pct = ((self.short_avg_price - price) / self.short_avg_price * 100) if self.short_avg_price > 0 else 0.0
+
+        if profit < 0:
+            self.consecutive_losses += 1
+            self.max_consecutive_losses = max(
+                self.max_consecutive_losses, self.consecutive_losses
+            )
+        else:
+            self.consecutive_losses = 0
+
+        self.balance += proceeds
+        self.short_position -= qty
+
+        trade = TradeRecord(
+            timestamp=timestamp,
+            action="BUY",
+            price=price,
+            amount=qty,
+            balance=self.balance,
+            position=float(self.long_position - self.short_position),
+            equity=self.balance + self.long_position * price - self.short_position * price,
+            profit=profit,
+            profit_pct=profit_pct,
+            reason=reason,
+            long_position=self.long_position,
+            short_position=self.short_position
+        )
+        self.trades.append(trade)
+
+        logger.info(
+            "[SHORT] 部分平空 %.4f (%.0f%%) @ %.2f, 剩余%.4f, 利润: %.2f (%.2f%%), 原因: %s",
+            qty, close_ratio * 100, price, self.short_position, profit, profit_pct, reason
         )
 
         return trade
@@ -1810,7 +2109,7 @@ class BacktestEngine:
                 if sum(losing_trades) != 0 else 0.0
             )
 
-            avg_profit = float(np.mean(profits))
+            avg_profit = net_profit / len(closed_trades)
             avg_win = float(np.mean(winning_trades)) if winning_trades else 0.0
             avg_loss = float(np.mean(losing_trades)) if losing_trades else 0.0
             avg_return_pct = float(np.mean(returns_pct))
@@ -1911,61 +2210,68 @@ class BacktestEngine:
         """
         构建已平仓交易列表
 
-        支持双仓位模式：
+        支持双仓位模式和部分平仓（PARTIAL_CLOSE）：
         - 多单：BUY(开) → SELL(平)，通过profit字段识别平仓交易
         - 空单：SELL(开) → BUY(平)，通过profit字段识别平仓交易
+        - 部分平仓：同一 entry 的多个 exit 聚合为一个 ClosedTrade
 
         Returns:
             已平仓交易列表
         """
-        closed_trades = []
+        exit_to_entry: Dict[int, int] = {}
+        entry_to_exits: Dict[int, List[int]] = {}
 
         for i in range(len(self.trades)):
             trade = self.trades[i]
             if trade.profit == 0.0:
                 continue
 
-            entry_trade = None
+            entry_idx = None
             for j in range(i - 1, -1, -1):
                 prev = self.trades[j]
                 if trade.action == "SELL":
                     if prev.action == "BUY" and prev.profit == 0.0:
-                        entry_trade = prev
+                        entry_idx = j
                         break
                 elif trade.action == "BUY":
                     if prev.action == "SELL" and prev.profit == 0.0:
-                        entry_trade = prev
+                        entry_idx = j
                         break
 
-            if entry_trade is None:
+            if entry_idx is None:
                 continue
 
+            if entry_idx not in entry_to_exits:
+                entry_to_exits[entry_idx] = []
+            entry_to_exits[entry_idx].append(i)
+
+        closed_trades = []
+
+        for entry_idx, exit_indices in entry_to_exits.items():
+            entry_trade = self.trades[entry_idx]
+            exits = [self.trades[i] for i in exit_indices]
+
+            total_profit = sum(e.profit for e in exits)
+            last_exit = self.trades[max(exit_indices)]
+
+            entry_value = entry_trade.amount * entry_trade.price
+            return_pct = (total_profit / entry_value * 100) if entry_value > 0 else 0.0
+
             holding_hours = (
-                (trade.timestamp - entry_trade.timestamp).total_seconds() / 3600
+                (last_exit.timestamp - entry_trade.timestamp).total_seconds() / 3600
             )
 
-            if trade.action == "SELL":
-                entry_value = entry_trade.amount * entry_trade.price
-                exit_value = trade.amount * trade.price
-                profit = exit_value - entry_value
-                return_pct = (profit / entry_value * 100) if entry_value > 0 else 0.0
-            else:
-                entry_value = entry_trade.amount * entry_trade.price
-                exit_value = trade.amount * trade.price
-                profit = entry_value - exit_value
-                return_pct = (profit / entry_value * 100) if entry_value > 0 else 0.0
-
-            stop_loss_hit = "止损" in trade.reason
-            take_profit_hit = "止盈" in trade.reason
+            stop_loss_hit = any("止损" in e.reason for e in exits)
+            take_profit_hit = any("止盈" in e.reason for e in exits)
 
             closed_trade = ClosedTrade(
                 entry_time=entry_trade.timestamp,
-                exit_time=trade.timestamp,
+                exit_time=last_exit.timestamp,
                 entry_price=entry_trade.price,
-                exit_price=trade.price,
+                exit_price=last_exit.price,
                 amount=entry_trade.amount,
-                profit=trade.profit,
-                return_pct=trade.profit_pct,
+                profit=total_profit,
+                return_pct=return_pct,
                 holding_hours=holding_hours,
                 stop_loss_hit=stop_loss_hit,
                 take_profit_hit=take_profit_hit
@@ -2024,13 +2330,31 @@ class BacktestEngine:
             # 准备交易信号
             signals = []
             for trade in self.trades:
-                if trade.action in ["BUY", "SELL"]:
-                    signals.append({
-                        "action": trade.action,
-                        "price": trade.price,
-                        "timestamp": trade.timestamp,
-                        "reason": trade.reason
-                    })
+                if trade.action not in ["BUY", "SELL"]:
+                    continue
+
+                signal_entry = {
+                    "action": trade.action,
+                    "price": trade.price,
+                    "timestamp": trade.timestamp,
+                    "reason": trade.reason
+                }
+
+                if trade.profit == 0.0:
+                    if trade.action == "BUY":
+                        signal_entry["signal_type"] = "OPEN_LONG"
+                    else:
+                        signal_entry["signal_type"] = "OPEN_SHORT"
+                else:
+                    reason = trade.reason
+                    if "止损" in reason:
+                        signal_entry["signal_type"] = "STOP_LOSS"
+                    elif "平60%" in reason or "平60" in reason:
+                        signal_entry["signal_type"] = "PARTIAL_CLOSE"
+                    else:
+                        signal_entry["signal_type"] = "CLOSE_REMAINING"
+
+                signals.append(signal_entry)
 
             # 创建绘图器
             plotter = ChanPlotter(

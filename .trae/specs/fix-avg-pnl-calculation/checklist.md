@@ -1,0 +1,8 @@
+- [x] 同一 BUY entry 不会被两个 SELL exit 重复匹配
+- [x] PARTIAL_CLOSE + 后续全平 聚合为 1 个 ClosedTrade（而非 2 个）
+- [x] 标准一次全平（无 PARTIAL_CLOSE）行为不变
+- [x] ClosedTrade 的利润 = 各段 exit profit 之和
+- [x] ClosedTrade 的 return_pct = 总利润 / (entry.amount * entry.price) * 100
+- [x] 平均每笔盈亏 ≈ 净利润 / 已平仓交易数 → $312.43 = $5,936.08 / 19
+- [x] 盈利因子/胜率基于名义盈亏计算（反映策略方向性准确度，与杠杆化余额会计是独立维度）
+- [x] 回测运行无报错，图表正常生成
