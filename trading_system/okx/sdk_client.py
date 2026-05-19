@@ -42,15 +42,27 @@ class APIResponse:
 class BinanceSDKClient:
     """Binance SDK客户端（参考官方SDK设计）"""
 
-    def __init__(self, api_key: str = None, secret_key: str = None, is_simulated: bool = False, proxy: Dict[str, Any] = None):
+    def __init__(
+        self,
+        api_key: str = None,
+        secret_key: str = None,
+        private_key: str = None,
+        private_key_passphrase: str = None,
+        is_simulated: bool = False,
+        proxy: Dict[str, Any] = None,
+    ):
         """初始化Binance SDK客户端
         :param api_key: API密钥
         :param secret_key: API密钥
+        :param private_key: RSA/Ed25519 私钥（支持路径或直接内容）
+        :param private_key_passphrase: 私钥口令（可选）
         :param is_simulated: 是否使用模拟盘
         :param proxy: 代理配置 {"host": "127.0.0.1", "port": 7890, "protocol": "http"}
         """
         self.api_key = api_key or binance_config.api_key
         self.secret_key = secret_key or binance_config.secret_key
+        self.private_key = private_key or binance_config.private_key
+        self.private_key_passphrase = private_key_passphrase or binance_config.private_key_passphrase
         self.is_simulated = is_simulated or binance_config.is_simulated
         self.base_url = binance_config.rest_url
 
@@ -62,7 +74,11 @@ class BinanceSDKClient:
         else:
             self.proxy = None
 
-        self.signer = BinanceSigner(self.secret_key)
+        self.signer = BinanceSigner(
+            secret_key=self.secret_key,
+            private_key=self.private_key,
+            private_key_passphrase=self.private_key_passphrase,
+        )
         self._session: Optional[aiohttp.ClientSession] = None
         self.database_adapter = None
 
@@ -121,7 +137,10 @@ class BinanceSDKClient:
 
         if signed:
             params["timestamp"] = BinanceSigner.get_timestamp()
-            params["signature"] = self.signer.sign_request(params)
+            payload = BinanceSigner.build_query_string(params)
+            signature = self.signer.sign(payload)
+            url = f"{url}?{payload}&signature={signature}"
+            params = None
 
         try:
             session = await self._get_session()
@@ -284,12 +303,9 @@ class BinanceSDKClient:
         """
         path = "/account"
 
-        params = {"timestamp": BinanceSigner.get_timestamp()}
-        params["signature"] = self.signer.sign_request(params)
-
         logger.info(f"[get_account] Request")
 
-        response = await self._request("GET", path, params=params, signed=True)
+        response = await self._request("GET", path, params={}, signed=True)
 
         if not response.is_success():
             logger.error(f"[get_account] Failed: {response.msg}")
@@ -303,11 +319,9 @@ class BinanceSDKClient:
         :return: 持仓列表
         """
         path = "/positionRisk"
-
-        params = {"timestamp": BinanceSigner.get_timestamp()}
+        params = {}
         if symbol:
             params["symbol"] = symbol
-        params["signature"] = self.signer.sign_request(params)
 
         logger.info(f"[get_positions] Request: {params}")
 

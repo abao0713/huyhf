@@ -30,6 +30,8 @@ class BinanceConfig:
     def __init__(self):
         self.api_key = os.getenv("BINANCE_API_KEY", "")
         self.secret_key = os.getenv("BINANCE_SECRET_KEY", "")
+        self.private_key = os.getenv("BINANCE_PRIVATE_KEY", "") or None
+        self.private_key_passphrase = os.getenv("BINANCE_PRIVATE_KEY_PASSPHRASE", "") or None
         self.is_simulated = os.getenv("BINANCE_IS_SIMULATED", "false").lower() == "true"
 
         # 代理配置
@@ -51,7 +53,7 @@ class BinanceConfig:
         return f"{self.rest_base_url}{self.rest_api_path}"
 
     def is_configured(self) -> bool:
-        return bool(self.api_key and self.secret_key)
+        return bool(self.api_key and (self.secret_key or self.private_key))
 
     def get_proxy_dict(self) -> Optional[Dict[str, Any]]:
         """获取代理配置字典"""

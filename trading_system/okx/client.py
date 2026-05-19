@@ -11,18 +11,33 @@ logger = logging.getLogger(__name__)
 class BinanceRestClient:
     """Binance REST API客户端"""
 
-    def __init__(self, api_key: str = None, secret_key: str = None, is_simulated: bool = False):
+    def __init__(
+        self,
+        api_key: str = None,
+        secret_key: str = None,
+        private_key: str = None,
+        private_key_passphrase: str = None,
+        is_simulated: bool = False,
+    ):
         """初始化Binance REST API客户端
         :param api_key: API密钥
         :param secret_key: API密钥
+        :param private_key: RSA/Ed25519 私钥（支持路径或直接内容）
+        :param private_key_passphrase: 私钥口令（可选）
         :param is_simulated: 是否使用模拟盘
         """
         self.api_key = api_key or binance_config.api_key
         self.secret_key = secret_key or binance_config.secret_key
+        self.private_key = private_key or binance_config.private_key
+        self.private_key_passphrase = private_key_passphrase or binance_config.private_key_passphrase
         self.is_simulated = is_simulated or binance_config.is_simulated
         self.base_url = binance_config.rest_url
 
-        self.signer = BinanceSigner(self.secret_key)
+        self.signer = BinanceSigner(
+            secret_key=self.secret_key,
+            private_key=self.private_key,
+            private_key_passphrase=self.private_key_passphrase,
+        )
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -60,7 +75,10 @@ class BinanceRestClient:
 
         if signed:
             params["timestamp"] = BinanceSigner.get_timestamp()
-            params["signature"] = self.signer.sign_request(params)
+            payload = BinanceSigner.build_query_string(params)
+            signature = self.signer.sign(payload)
+            url = f"{url}?{payload}&signature={signature}"
+            params = None
 
         try:
             session = await self._get_session()
@@ -195,12 +213,9 @@ class BinanceRestClient:
         """
         path = "/account"
 
-        params = {"timestamp": BinanceSigner.get_timestamp()}
-        params["signature"] = self.signer.sign_request(params)
-
         logger.info(f"[get_account] Request")
 
-        result = await self._request("GET", path, params=params, signed=True)
+        result = await self._request("GET", path, params={}, signed=True)
 
         return result
 
@@ -210,11 +225,9 @@ class BinanceRestClient:
         :return: 持仓列表
         """
         path = "/positionRisk"
-
-        params = {"timestamp": BinanceSigner.get_timestamp()}
+        params = {}
         if symbol:
             params["symbol"] = symbol
-        params["signature"] = self.signer.sign_request(params)
 
         logger.info(f"[get_positions] Request: {params}")
 
