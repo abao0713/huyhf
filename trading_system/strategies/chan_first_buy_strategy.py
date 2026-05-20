@@ -10,7 +10,7 @@ import numpy as np
 from .base_strategy import BaseStrategy
 from .chan_strategy import Fractal, Pen
 from ..data.market_data import get_30m_klines
-from ..okx.client import BinanceRestClient
+from ..binance.client import BinanceRestClient
 from ..utils.indicators import (
     calculate_ma,
     calculate_price_slope,

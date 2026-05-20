@@ -12,7 +12,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from trading_system.okx.client import BinanceRestClient
+from trading_system.binance.client import BinanceRestClient
 
 logger = logging.getLogger(__name__)
 
@@ -274,8 +274,6 @@ class PaperTradingClient:
 
     async def close(self):
         self._print_report()
-        if hasattr(self, "_kline_client") and self._kline_client:
-            await self._kline_client.close()
 
     def _find_position(self, symbol: str, position_side: str) -> Optional[Dict[str, Any]]:
         for p in self._positions:

@@ -2317,7 +2317,7 @@ class MultiTFFractalStrategyExecutor:
         self.is_running = False
 
     async def _run_once(self):
-        from ..okx.client import BinanceRestClient
+        from ..binance.client import BinanceRestClient
 
         try:
             binance_client = BinanceRestClient(
@@ -2444,7 +2444,7 @@ class MultiTFFractalStrategyExecutor:
 
         result = await self.client.place_order(
             symbol=self.symbol, side="BUY", position_side="LONG",
-            order_type="MARKET", quantity=qty,
+            order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 试探开多: 投入=${investment:.2f} | qty={qty} | 止损={stop_loss:.2f}")
         self.strategy.update_position_from_signal(signal)
@@ -2463,7 +2463,7 @@ class MultiTFFractalStrategyExecutor:
 
         result = await self.client.place_order(
             symbol=self.symbol, side="BUY", position_side="LONG",
-            order_type="MARKET", quantity=qty,
+            order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 确认加仓: 投入=${investment:.2f} | qty={qty} | 新止损={stop_loss:.2f}")
         self.strategy.update_position_from_signal(signal)
@@ -2482,7 +2482,7 @@ class MultiTFFractalStrategyExecutor:
 
         result = await self.client.place_order(
             symbol=self.symbol, side="BUY", position_side="LONG",
-            order_type="MARKET", quantity=qty,
+            order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 提前入场开多: 投入=${investment:.2f} | qty={qty} | "
                    f"止损={stop_loss:.2f} | 置信度={signal.get('confidence', 0):.2f} | "
@@ -2503,7 +2503,7 @@ class MultiTFFractalStrategyExecutor:
 
         result = await self.client.place_order(
             symbol=self.symbol, side="SELL", position_side="SHORT",
-            order_type="MARKET", quantity=qty,
+            order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 提前做空入场: 投入=${investment:.2f} | qty={qty} | "
                    f"止损={stop_loss:.2f} | 置信度={signal.get('confidence', 0):.2f} | "
@@ -2524,7 +2524,7 @@ class MultiTFFractalStrategyExecutor:
 
         result = await self.client.place_order(
             symbol=self.symbol, side="SELL", position_side="SHORT",
-            order_type="MARKET", quantity=qty,
+            order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 试探开空: 投入=${investment:.2f} | qty={qty} | 止损={stop_loss:.2f}")
         self.strategy.update_position_from_signal(signal)
@@ -2543,7 +2543,7 @@ class MultiTFFractalStrategyExecutor:
 
         result = await self.client.place_order(
             symbol=self.symbol, side="SELL", position_side="SHORT",
-            order_type="MARKET", quantity=qty,
+            order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 确认做空加仓: 投入=${investment:.2f} | qty={qty} | 新止损={stop_loss:.2f}")
         self.strategy.update_position_from_signal(signal)

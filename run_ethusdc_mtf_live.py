@@ -20,8 +20,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from trading_system.okx.client import BinanceRestClient
-from trading_system.okx.paper_client import PaperTradingClient
+from trading_system.binance.client import BinanceRestClient
+from trading_system.binance.paper_client import PaperTradingClient
 from trading_system.strategies.mtf_fractal_strategy import (
     MultiTFFractalStrategy, MultiTFFractalStrategyExecutor
 )

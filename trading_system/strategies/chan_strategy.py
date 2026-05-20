@@ -7,7 +7,7 @@ import numpy as np
 
 from .base_strategy import BaseStrategy
 from ..data.market_data import MarketDataClient, get_30m_klines, get_daily_klines
-from ..okx.client import BinanceRestClient
+from ..binance.client import BinanceRestClient
 from ..utils.indicators import calculate_macd, calculate_macd_area, check_divergence, binance_klines_to_dataframe, calculate_ma
 
 logger = logging.getLogger(__name__)

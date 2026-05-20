@@ -1,0 +1,9 @@
+- [x] _open_long_probe place_order 使用 LIMIT + price 参数
+- [x] _open_short_probe place_order 使用 LIMIT + price 参数
+- [x] _open_early_entry place_order 使用 LIMIT + price 参数
+- [x] _open_early_short_entry place_order 使用 LIMIT + price 参数
+- [x] _add_long_confirm place_order 使用 LIMIT + price 参数
+- [x] _add_short_confirm place_order 使用 LIMIT + price 参数
+- [x] _close_all_long 保持 MARKET 市价单不变
+- [x] _close_all_short 保持 MARKET 市价单不变
+- [x] python -m py_compile 通过

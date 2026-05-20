@@ -1,15 +1,14 @@
 import asyncio
-import aiohttp
 import logging
 from typing import Dict, Any, Optional, List
-from trading_system.okx.signer import BinanceSigner
-from trading_system.okx.config import config as binance_config
+from binance.um_futures import UMFutures
+from trading_system.binance.config import config as binance_config
 
 logger = logging.getLogger(__name__)
 
 
 class BinanceRestClient:
-    """Binance REST API客户端"""
+    """Binance REST API客户端（基于官方 UMFutures SDK）"""
 
     def __init__(self, api_key: str = None, secret_key: str = None, is_simulated: bool = False):
         """初始化Binance REST API客户端
@@ -20,72 +19,21 @@ class BinanceRestClient:
         self.api_key = api_key or binance_config.api_key
         self.secret_key = secret_key or binance_config.secret_key
         self.is_simulated = is_simulated or binance_config.is_simulated
-        self.base_url = binance_config.rest_url
 
-        self.signer = BinanceSigner(self.secret_key)
-        self._session: Optional[aiohttp.ClientSession] = None
+        if self.is_simulated:
+            base_url = "https://testnet.binancefuture.com"
+        else:
+            base_url = "https://fapi.binance.com"
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """获取或创建HTTP会话"""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
-        return self._session
+        self._sdk = UMFutures(key=self.api_key, secret=self.secret_key, base_url=base_url)
+        self._sdk.session.trust_env = False
+
+    def _run_sync(self, func, *args, **kwargs):
+        loop = asyncio.get_event_loop()
+        return loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
     async def close(self):
-        """关闭HTTP会话"""
-        if self._session and not self._session.closed:
-            await self._session.close()
-
-    async def _request(
-        self,
-        method: str,
-        path: str,
-        params: Dict[str, Any] = None,
-        body: Dict[str, Any] = None,
-        signed: bool = False
-    ) -> Dict[str, Any]:
-        """发送HTTP请求
-        :param method: HTTP方法
-        :param path: 请求路径
-        :param params: URL参数
-        :param body: 请求体
-        :param signed: 是否需要签名
-        :return: 响应数据
-        """
-        url = f"{self.base_url}{path}"
-        headers = {"X-MBX-APIKEY": self.api_key}
-
-        if params is None:
-            params = {}
-
-        if signed:
-            params["timestamp"] = BinanceSigner.get_timestamp()
-            params["signature"] = self.signer.sign_request(params)
-
-        try:
-            session = await self._get_session()
-
-            if method == "GET":
-                async with session.get(url, params=params, headers=headers, timeout=30) as response:
-                    result = await response.json()
-                    return result
-            elif method == "POST":
-                async with session.post(url, json=body, params=params, headers=headers, timeout=30) as response:
-                    result = await response.json()
-                    return result
-            elif method == "DELETE":
-                async with session.delete(url, params=params, headers=headers, timeout=30) as response:
-                    result = await response.json()
-                    return result
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-
-        except aiohttp.ClientError as e:
-            logger.error(f"HTTP请求失败: {str(e)}")
-            return {"error": str(e), "code": -1}
-        except Exception as e:
-            logger.error(f"请求异常: {str(e)}")
-            return {"error": str(e), "code": -1}
+        pass
 
     async def place_order(
         self,
@@ -107,30 +55,21 @@ class BinanceRestClient:
         :param time_in_force: 有效期限 "GTC" / "IOC" / "FOK"
         :return: 下单结果
         """
-        path = "/order"
-
-        params = {
-            "symbol": symbol,
-            "side": side,
-            "positionSide": position_side,
-            "type": order_type,
-            "quantity": quantity
-        }
-
+        params = dict(symbol=symbol, side=side, type=order_type, quantity=quantity,
+                      positionSide=position_side)
         if order_type == "LIMIT":
             params["price"] = price
             params["timeInForce"] = time_in_force
 
         logger.info(f"[place_order] Request: {params}")
 
-        result = await self._request("POST", path, params=params, signed=True)
-
-        if result.get("code") == 0 or result.get("msg") == "Success":
-            logger.info(f"[place_order] Order placed successfully: {result}")
-        else:
-            logger.error(f"[place_order] Order failed: {result.get('msg', result.get('error', 'Unknown error'))}")
-
-        return result
+        try:
+            result = await self._run_sync(self._sdk.new_order, **params)
+            logger.info(f"[place_order] Order placed: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"[place_order] Order failed: {e}")
+            return {"error": str(e), "msg": str(e)}
 
     async def get_order(
         self,
@@ -144,9 +83,7 @@ class BinanceRestClient:
         :param orig_client_order_id: 客户端订单ID
         :return: 订单信息
         """
-        path = "/order"
-
-        params = {"symbol": symbol}
+        params = dict(symbol=symbol)
         if order_id:
             params["orderId"] = order_id
         if orig_client_order_id:
@@ -154,9 +91,12 @@ class BinanceRestClient:
 
         logger.info(f"[get_order] Request: {params}")
 
-        result = await self._request("GET", path, params=params, signed=True)
-
-        return result
+        try:
+            result = await self._run_sync(self._sdk.query_order, **params)
+            return result
+        except Exception as e:
+            logger.error(f"[get_order] Query failed: {e}")
+            return {"error": str(e), "msg": str(e)}
 
     async def cancel_order(
         self,
@@ -170,9 +110,7 @@ class BinanceRestClient:
         :param orig_client_order_id: 客户端订单ID
         :return: 取消结果
         """
-        path = "/order"
-
-        params = {"symbol": symbol}
+        params = dict(symbol=symbol)
         if order_id:
             params["orderId"] = order_id
         if orig_client_order_id:
@@ -180,61 +118,56 @@ class BinanceRestClient:
 
         logger.info(f"[cancel_order] Request: {params}")
 
-        result = await self._request("DELETE", path, params=params, signed=True)
-
-        if result.get("code") == 0 or result.get("msg") == "Success":
-            logger.info(f"[cancel_order] Order cancelled successfully")
-        else:
-            logger.error(f"[cancel_order] Cancel failed: {result.get('msg', 'Unknown error')}")
-
-        return result
+        try:
+            result = await self._run_sync(self._sdk.cancel_order, **params)
+            logger.info(f"[cancel_order] Cancelled: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"[cancel_order] Cancel failed: {e}")
+            return {"error": str(e), "msg": str(e)}
 
     async def get_account(self) -> Dict[str, Any]:
         """获取账户信息
         :return: 账户信息
         """
-        path = "/account"
-
-        params = {"timestamp": BinanceSigner.get_timestamp()}
-        params["signature"] = self.signer.sign_request(params)
-
-        logger.info(f"[get_account] Request")
-
-        result = await self._request("GET", path, params=params, signed=True)
-
-        return result
+        try:
+            result = await self._run_sync(self._sdk.account, recvWindow=6000)
+            return result
+        except Exception as e:
+            logger.error(f"[get_account] Failed: {e}")
+            return {"error": str(e), "msg": str(e)}
 
     async def get_positions(self, symbol: str = None) -> List[Dict[str, Any]]:
         """获取持仓信息
         :param symbol: 交易对（可选）
         :return: 持仓列表
         """
-        path = "/positionRisk"
-
-        params = {"timestamp": BinanceSigner.get_timestamp()}
+        params = dict()
         if symbol:
             params["symbol"] = symbol
-        params["signature"] = self.signer.sign_request(params)
 
         logger.info(f"[get_positions] Request: {params}")
 
-        result = await self._request("GET", path, params=params, signed=True)
-
-        if isinstance(result, list):
-            return result
-        return []
+        try:
+            result = await self._run_sync(self._sdk.get_position_risk, **params)
+            if isinstance(result, list):
+                return result
+            return []
+        except Exception as e:
+            logger.error(f"[get_positions] Failed: {e}")
+            return []
 
     async def get_exchange_info(self) -> Dict[str, Any]:
         """获取交易所信息
         :return: 交易所信息
         """
-        path = "/exchangeInfo"
-
         logger.info(f"[get_exchange_info] Request")
-
-        result = await self._request("GET", path)
-
-        return result
+        try:
+            result = await self._run_sync(self._sdk.exchange_info)
+            return result
+        except Exception as e:
+            logger.error(f"[get_exchange_info] Failed: {e}")
+            return {"error": str(e), "msg": str(e)}
 
     async def get_continuous_klines(
         self,
@@ -256,21 +189,18 @@ class BinanceRestClient:
         """
         logger.info(f"[get_continuous_klines] pair={pair}, interval={interval}, limit={limit}")
 
-        path = "/continuousKlines"
-        params = {
-            "pair": pair,
-            "contractType": contractType,
-            "interval": interval,
-            "limit": limit
-        }
-
+        params = dict(pair=pair, contractType=contractType, interval=interval, limit=limit)
         if startTime:
             params["startTime"] = startTime
         if endTime:
             params["endTime"] = endTime
 
-        result = await self._request("GET", path, params=params)
-        return result
+        try:
+            result = await self._run_sync(self._sdk.continuous_klines, **params)
+            return result
+        except Exception as e:
+            logger.error(f"[get_continuous_klines] Failed: {e}")
+            return []
 
     async def get_spot_klines(
         self,
@@ -292,41 +222,46 @@ class BinanceRestClient:
         """
         logger.info(f"[get_spot_klines] symbol={symbol}, interval={interval}, limit={limit}")
 
-        path = "/klines"
-        params = {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit
-        }
-
+        params = dict(symbol=symbol, interval=interval, limit=limit)
         if startTime:
             params["startTime"] = startTime
         if endTime:
             params["endTime"] = endTime
 
-        result = await self._request("GET", path, params=params)
-        return result
+        try:
+            result = await self._run_sync(self._sdk.klines, **params)
+            return result
+        except Exception as e:
+            logger.error(f"[get_spot_klines] Failed: {e}")
+            return []
 
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="调试Binance REST API客户端")
     parser.add_argument("--api-key", help="API密钥")
     parser.add_argument("--secret-key", help="API密钥")
     parser.add_argument("--simulated", action="store_true", help="使用模拟盘")
     args = parser.parse_args()
-    
+
     async def main():
         client = BinanceRestClient(
             api_key=args.api_key,
             secret_key=args.secret_key,
             is_simulated=args.simulated
         )
-        
+
         try:
-            # 测试获取永续合约K线
-            print("测试获取永续合约K线数据...")
+            print("=" * 60)
+            print("测试1: 获取交易所信息")
+            print("=" * 60)
+            info = await client.get_exchange_info()
+            print(f"交易所信息: {info}")
+
+            print("\n" + "=" * 60)
+            print("测试2: 获取永续合约K线数据")
+            print("=" * 60)
             continuous_klines = await client.get_continuous_klines(
                 pair="BTCUSDT",
                 contractType="PERPETUAL",
@@ -335,9 +270,10 @@ if __name__ == "__main__":
             )
             print(f"永续合约K线数据: {continuous_klines}")
             print(f"获取到 {len(continuous_klines) if continuous_klines else 0} 条K线数据")
-            
-            # 测试获取现货K线
-            print("\n测试获取现货K线数据...")
+
+            print("\n" + "=" * 60)
+            print("测试3: 获取现货K线数据")
+            print("=" * 60)
             spot_klines = await client.get_spot_klines(
                 symbol="BTCUSDT",
                 contractType="PERPETUAL",
@@ -347,7 +283,59 @@ if __name__ == "__main__":
             print(f"现货K线数据: {spot_klines}")
             print(f"获取到 {len(spot_klines) if spot_klines else 0} 条K线数据")
 
+            print("\n" + "=" * 60)
+            print("测试4: 获取账户信息")
+            print("=" * 60)
+            account = await client.get_account()
+            print(f"账户信息: {account}")
+
+            print("\n" + "=" * 60)
+            print("测试5: 下限价单")
+            print("=" * 60)
+            tick_size = 0.01
+            for s in (info.get("symbols") or []) if isinstance(info, dict) else []:
+                if s.get("symbol") == "BTCUSDT":
+                    for f in s.get("filters", []):
+                        if f.get("filterType") == "PRICE_FILTER":
+                            tick_size = float(f.get("tickSize", 0.01))
+                    break
+            latest_price = float(continuous_klines[-1][4]) if continuous_klines else 77000.0
+            price = round(round(latest_price * 0.99 / tick_size) * tick_size, 8)
+            price_str = f"{price:.{str(tick_size).rstrip('0').split('.')[1]}f}" if '.' in str(tick_size) else str(int(price))
+            order_result = await client.place_order(
+                symbol="BTCUSDT",
+                side="BUY",
+                position_side="BOTH",
+                order_type="LIMIT",
+                quantity=0.001,
+                price=float(price_str),
+                time_in_force="GTC"
+            )
+            print(f"下单结果: {order_result}")
+            order_id = order_result.get("orderId") or order_result.get("order_id")
+            print(f"订单ID: {order_id}")
+
+            print("\n" + "=" * 60)
+            print("测试6: 查询订单")
+            print("=" * 60)
+            if order_id:
+                query_result = await client.get_order(symbol="BTCUSDT", order_id=order_id)
+                print(f"查询订单结果: {query_result}")
+
+            print("\n" + "=" * 60)
+            print("测试7: 取消订单")
+            print("=" * 60)
+            if order_id:
+                cancel_result = await client.cancel_order(symbol="BTCUSDT", order_id=order_id)
+                print(f"取消订单结果: {cancel_result}")
+
+            print("\n" + "=" * 60)
+            print("测试8: 获取持仓信息")
+            print("=" * 60)
+            positions = await client.get_positions(symbol="BTCUSDT")
+            print(f"持仓信息: {positions}")
+
         finally:
             await client.close()
-    
+
     asyncio.run(main())

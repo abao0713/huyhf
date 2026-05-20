@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from trading_system.okx.client import BinanceRestClient
+from trading_system.binance.client import BinanceRestClient
 from trading_system.strategies.chan_strategy_v2 import ChanStrategyV2Executor
 
 logging.basicConfig(

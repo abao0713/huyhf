@@ -1,0 +1,28 @@
+2026-05-17 15:58:13,772 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 15:58:13,772 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 16:14:31,529 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 16:14:31,529 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 16:19:17,848 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 16:19:17,853 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 17:53:25,032 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 17:53:25,032 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 17:54:23,260 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 17:54:23,261 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 18:28:19,841 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 18:28:19,841 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 18:29:23,227 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-17 18:29:23,227 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:14:53,941 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:14:53,941 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:16:39,315 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:16:39,315 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:25:08,489 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:25:08,490 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:27:15,525 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:27:15,525 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:28:10,191 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:28:10,191 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:28:18,147 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:28:18,147 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:29:26,009 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-18 22:29:26,009 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db

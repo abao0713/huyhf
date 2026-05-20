@@ -1,0 +1,7 @@
+- [x] `_request(signed=True)` 自动在 params 中添加 `recvWindow=5000`，且 recvWindow 参与签名计算
+- [x] `recvWindow` 支持调用方自定义传入（可选参数）
+- [x] `_request()` 的处理顺序：timestamp → recvWindow → signature
+- [x] `get_account()` 不再手动添加 timestamp 和 signature
+- [x] `get_positions()` 不再手动添加 timestamp 和 signature
+- [x] `get_account()` 和 `get_positions()` 功能正确（仍返回账户信息和持仓数据）
+- [x] python -m py_compile 通过

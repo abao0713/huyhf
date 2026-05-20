@@ -18,7 +18,7 @@ import pandas as pd
 
 from .base_strategy import BaseStrategy
 from .chan_strategy import ChanStrategy, Fractal, Pen
-from ..okx.client import BinanceRestClient
+from ..binance.client import BinanceRestClient
 from ..utils.indicators import binance_klines_to_dataframe
 
 logger = logging.getLogger(__name__)

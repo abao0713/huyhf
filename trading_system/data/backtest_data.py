@@ -64,7 +64,7 @@ class BacktestDataManager:
             保存的文件字典 {interval: file_path}
         """
         import asyncio
-        from trading_system.okx.client import BinanceRestClient
+        from trading_system.binance.client import BinanceRestClient
         from datetime import datetime
 
         saved_files = {}

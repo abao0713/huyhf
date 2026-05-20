@@ -1,0 +1,9 @@
+- [x] `BinanceSigner.__init__` 自动检测 HMAC 密钥（非PEM格式 → HMAC SHA256）
+- [x] `BinanceSigner.__init__` 自动检测 PEM Ed25519 密钥使用 Ed25519 rfc8032
+- [x] `BinanceSigner.__init__` 自动检测 PEM RSA 密钥使用 PKCS1_v1_5
+- [x] `BinanceSigner.sign_request()` 签名结果与旧版 HMAC 兼容（签名完全一致）
+- [x] `BinanceSigner.get_timestamp()` 返回毫秒时间戳
+- [x] `client.py` 无需任何修改即可正常运行
+- [x] `python -m py_compile` signer.py 和 client.py 通过
+- [x] `get_positions()` 签名 GET 请求返回 `[]`（签名验证通过）
+- [x] `place_order()` 市价单和限价单签名正确，`-2015` 是 API Key 缺少 TRADE 权限
