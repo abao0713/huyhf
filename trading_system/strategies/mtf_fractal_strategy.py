@@ -83,6 +83,8 @@ class TopFractalK12Structure:
 
 
 class MultiTFFractalStrategy(BaseStrategy):
+    SUPPORT_LOOKBACK = 3
+    RESISTANCE_LOOKBACK = 3
 
     def __init__(
         self,
@@ -181,6 +183,7 @@ class MultiTFFractalStrategy(BaseStrategy):
         self.early_short_entry_min_confidence = early_short_entry_min_confidence
         self.early_short_entry_ratio = early_short_entry_ratio
         self.min_early_entry_conditions = min_early_entry_conditions
+        self._warmup_done = False
 
     def set_support_levels(self, levels: List[float]):
         self.support_levels = sorted(levels, reverse=True)
@@ -305,15 +308,21 @@ class MultiTFFractalStrategy(BaseStrategy):
     def _check_support_zone(self) -> Tuple[bool, float]:
         if self.df_4h.empty or not self.support_levels:
             return False, 0.0
+        atr_val = getattr(self, 'current_atr', 0.0) or 0.0
         current_price = float(self.df_4h.iloc[-1]["close"])
-        current_low = float(self.df_4h.iloc[-1]["low"])
-        check_price = min(current_price, current_low)
-        atr = getattr(self, 'current_atr', 0.0) or 0.0
-        threshold = min(atr * 0.5, current_price * 0.01) if atr > 0 else current_price * 0.01
+        threshold = min(atr_val * 0.5, current_price * 0.01) if atr_val > 0 else current_price * 0.01
+        lookback = max(1, min(self.SUPPORT_LOOKBACK, len(self.df_4h)))
+        window = self.df_4h.iloc[-lookback:]
+
         for level in self.support_levels:
-            if check_price <= level + threshold:
-                logger.info(f"[MTF] 价格进入支撑区域: 当前={check_price:.2f}, 支撑位={level}, 阈值={threshold:.2f}")
-                return True, level
+            for i in range(len(window)):
+                row = window.iloc[-1 - i]
+                check_price = min(float(row["close"]), float(row["low"]))
+                if check_price <= level + threshold:
+                    bar_label = f"K线#{-1 - i}" if i > 0 else "当前"
+                    kind = "回看支撑区域" if i > 0 else "进入支撑区域"
+                    logger.info(f"[MTF] 价格{kind}: {bar_label} low={check_price:.2f}, 支撑位={level}, 阈值={threshold:.2f}")
+                    return True, level
         return False, 0.0
 
     def _calculate_atr(self) -> None:
@@ -336,9 +345,25 @@ class MultiTFFractalStrategy(BaseStrategy):
             logger.warning(f"[MTF] ATR计算失败: {e}")
             self.current_atr = 0.0
 
+    def _get_4h_merged_for_analysis(self) -> pd.DataFrame:
+        """
+        获取用于分型分析的4h K线数据（优先使用包含关系合并后的数据）
+        
+        包含关系处理说明：
+        ChanStrategy._merge_inclusion() 会将连续存在包含关系的3根K线合并为1根，
+        消除因K线包含造成的虚假分型信号。
+        
+        Returns:
+            pd.DataFrame: 合并后的K线数据，若不可用则返回原始df_4h
+        """
+        df = getattr(self, 'df_processed', pd.DataFrame())
+        if df.empty or len(df) < 3:
+            return self.df_4h
+        return df
+
     def _check_4h_bottom_fractal_k1k2(self) -> BottomFractalK12Structure:
         """
-        检测4小时底分型K1/K2结构
+        检测4小时底分型K1/K2结构（基于包含关系合并后的K线）
         
         K1: 下跌K线（收盘<开盘）
         K2: 最低点低于K1低点
@@ -349,16 +374,17 @@ class MultiTFFractalStrategy(BaseStrategy):
         """
         result = BottomFractalK12Structure()
         
-        if len(self.df_4h) < 3:
+        df = self._get_4h_merged_for_analysis()
+        if len(df) < 3:
             return result
         
-        k1_idx = len(self.df_4h) - 3
-        k2_idx = len(self.df_4h) - 2
-        k3_idx = len(self.df_4h) - 1
+        k1_idx = len(df) - 3
+        k2_idx = len(df) - 2
+        k3_idx = len(df) - 1
         
-        k1 = self.df_4h.iloc[k1_idx]
-        k2 = self.df_4h.iloc[k2_idx]
-        k3 = self.df_4h.iloc[k3_idx]
+        k1 = df.iloc[k1_idx]
+        k2 = df.iloc[k2_idx]
+        k3 = df.iloc[k3_idx]
         
         k1_open = float(k1["open"])
         k1_close = float(k1["close"])
@@ -412,7 +438,7 @@ class MultiTFFractalStrategy(BaseStrategy):
 
     def _is_in_candle_second_half(self) -> bool:
         """
-        判断当前是否处于4小时K线的后半段
+        判断当前是否处于4小时K线的后半段（基于包含关系合并后的K线）
         
         逻辑: 获取当前4小时K线的开始时间，计算当前时间距离K线开始已过去多少分钟
         如果超过K线周期的50%，返回True
@@ -420,10 +446,11 @@ class MultiTFFractalStrategy(BaseStrategy):
         Returns:
             bool: 是否处于K线后半段
         """
-        if self.df_4h.empty:
+        df = self._get_4h_merged_for_analysis()
+        if df.empty:
             return False
         
-        current_bar = self.df_4h.iloc[-1]
+        current_bar = df.iloc[-1]
         
         if "open_time" not in current_bar:
             return True
@@ -760,7 +787,7 @@ class MultiTFFractalStrategy(BaseStrategy):
 
     def _check_4h_top_fractal_k1k2(self) -> TopFractalK12Structure:
         """
-        检测4小时顶分型K1/K2结构
+        检测4小时顶分型K1/K2结构（基于包含关系合并后的K线）
         
         K1: 上涨K线（收盘>开盘）
         K2: 最高点高于K1高点
@@ -771,16 +798,17 @@ class MultiTFFractalStrategy(BaseStrategy):
         """
         result = TopFractalK12Structure()
         
-        if len(self.df_4h) < 3:
+        df = self._get_4h_merged_for_analysis()
+        if len(df) < 3:
             return result
         
-        k1_idx = len(self.df_4h) - 3
-        k2_idx = len(self.df_4h) - 2
-        k3_idx = len(self.df_4h) - 1
+        k1_idx = len(df) - 3
+        k2_idx = len(df) - 2
+        k3_idx = len(df) - 1
         
-        k1 = self.df_4h.iloc[k1_idx]
-        k2 = self.df_4h.iloc[k2_idx]
-        k3 = self.df_4h.iloc[k3_idx]
+        k1 = df.iloc[k1_idx]
+        k2 = df.iloc[k2_idx]
+        k3 = df.iloc[k3_idx]
         
         k1_open = float(k1["open"])
         k1_close = float(k1["close"])
@@ -1150,15 +1178,21 @@ class MultiTFFractalStrategy(BaseStrategy):
     def _check_resistance_zone(self) -> Tuple[bool, float]:
         if self.df_4h.empty or not self.resistance_levels:
             return False, 0.0
+        atr_val = getattr(self, 'current_atr', 0.0) or 0.0
         current_price = float(self.df_4h.iloc[-1]["close"])
-        current_high = float(self.df_4h.iloc[-1]["high"])
-        check_price = max(current_price, current_high)
-        atr = getattr(self, 'current_atr', 0.0) or 0.0
-        threshold = min(atr * 0.5, current_price * 0.01) if atr > 0 else current_price * 0.01
+        threshold = min(atr_val * 0.5, current_price * 0.01) if atr_val > 0 else current_price * 0.01
+        lookback = max(1, min(self.RESISTANCE_LOOKBACK, len(self.df_4h)))
+        window = self.df_4h.iloc[-lookback:]
+
         for level in self.resistance_levels:
-            if check_price >= level - threshold:
-                logger.info(f"[MTF] 价格进入阻力区域: 当前={check_price:.2f}, 阻力位={level}, 阈值={threshold:.2f}")
-                return True, level
+            for i in range(len(window)):
+                row = window.iloc[-1 - i]
+                check_price = max(float(row["close"]), float(row["high"]))
+                if check_price >= level - threshold:
+                    bar_label = f"K线#{-1 - i}" if i > 0 else "当前"
+                    kind = "回看阻力区域" if i > 0 else "进入阻力区域"
+                    logger.info(f"[MTF] 价格{kind}: {bar_label} high={check_price:.2f}, 阻力位={level}, 阈值={threshold:.2f}")
+                    return True, level
         return False, 0.0
 
     def _check_4h_top_fractal(self) -> Tuple[bool, int, int]:
@@ -1744,6 +1778,119 @@ class MultiTFFractalStrategy(BaseStrategy):
             return True, safe_qty
         return True, qty
 
+    def generate_signal_diagnostic(self) -> Dict[str, Any]:
+        checks = {
+            "warmup": {"passed": True, "reason": "已完成"},
+            "time_dedup": {"passed": True, "current_time": "", "last_signal_time": ""},
+            "position_state": {"passed": True, "direction": "None"},
+            "daily_pause": {"paused": self._daily_stopped or self._trading_paused},
+            "early_entry": {},
+            "standard_entry": {},
+        }
+
+        if not self._warmup_done:
+            checks["warmup"] = {"passed": False, "reason": "首次热身跳过"}
+            return {"signal": None, "checks": checks}
+
+        if self.df_4h.empty or self.df_30m.empty:
+            return {"signal": None, "checks": checks}
+
+        current_time = self.df_4h.iloc[-1].get("open_time", pd.Timestamp.now())
+        if isinstance(current_time, (int, float)):
+            current_time = pd.Timestamp(current_time, unit='ms')
+
+        last_ts = getattr(self, '_last_signal_time', None)
+        checks["time_dedup"] = {
+            "passed": last_ts is None or current_time > last_ts,
+            "current_time": str(current_time),
+            "last_signal_time": str(last_ts) if last_ts is not None else "None",
+        }
+
+        direction = self.position_state.direction
+        checks["position_state"] = {"passed": direction is None, "direction": str(direction)}
+
+        signal = self.generate_signal()
+        if signal:
+            return {"signal": signal, "checks": checks}
+
+        if direction is None:
+            if not self.df_4h.empty and len(self.df_4h) >= 3:
+                k1k2 = self._check_4h_bottom_fractal_k1k2()
+                early_checks = {
+                    "k1k2_bottom": {
+                        "passed": k1k2.has_structure,
+                        "has_structure": k1k2.has_structure,
+                        "is_k3_forming": k1k2.is_k3_forming,
+                        "is_in_second_half": k1k2.is_in_second_half,
+                        "k2_low": k1k2.k2_low,
+                        "confidence": k1k2.confidence,
+                    }
+                }
+
+                if self.enable_early_entry and not self.df_15m.empty and len(self.df_15m) >= 50:
+                    first_buy_detected, _ = self._check_15m_first_buy()
+                    second_buy_detected, _ = self._check_15m_second_buy(k1k2)
+                    uptrend_confirmed, _ = self._check_15m_uptrend()
+                    satisfied = sum([first_buy_detected, second_buy_detected, uptrend_confirmed])
+                    early_checks.update({
+                        "15m_first_buy": {"passed": first_buy_detected},
+                        "15m_second_buy": {"passed": second_buy_detected},
+                        "15m_uptrend": {"passed": uptrend_confirmed},
+                        "satisfied_count": satisfied,
+                        "min_required": self.min_early_entry_conditions,
+                    })
+                elif self.enable_early_entry and self.df_15m.empty:
+                    early_checks["15m_data"] = {"passed": False, "reason": "15m数据为空"}
+                checks["early_entry"] = early_checks
+
+            std_checks = {}
+            if not self.df_4h.empty:
+                has_support, nearest_level = self._check_support_zone()
+                current_price = float(self.df_4h.iloc[-1]["close"])
+                current_low = float(self.df_4h.iloc[-1]["low"])
+                check_price = min(current_price, current_low)
+                atr_val = getattr(self, 'current_atr', 0.0) or 0.0
+                threshold = min(atr_val * 0.5, current_price * 0.01) if atr_val > 0 else current_price * 0.01
+                std_checks["support_zone"] = {
+                    "passed": has_support,
+                    "price": round(check_price, 2),
+                    "nearest_level": nearest_level,
+                    "threshold": round(threshold, 2),
+                    "levels": self.support_levels[:3] if self.support_levels else [],
+                }
+
+                if self.fractals:
+                    recent_bottoms = [f for f in self.fractals[-3:] if f.type == "bottom"]
+                    has_fractal = len(recent_bottoms) > 0
+                    fractal_info = {
+                        "passed": has_fractal,
+                        "has_fractal": has_fractal,
+                        "total_fractals": len(self.fractals),
+                        "recent_bottoms": len(recent_bottoms),
+                    }
+                    if has_fractal:
+                        lf = recent_bottoms[-1]
+                        fractal_info["k2_idx"] = lf.idx
+                        try:
+                            df_ref = self.df_processed if not self.df_processed.empty else self.df_4h
+                            if lf.idx < len(df_ref):
+                                k2 = df_ref.iloc[lf.idx]
+                                fractal_info["k2_close"] = round(float(k2["close"]), 2)
+                                fractal_info["k2_open"] = round(float(k2["open"]), 2)
+                        except Exception:
+                            pass
+                else:
+                    fractal_info = {"passed": False, "has_fractal": False, "total_fractals": 0}
+                std_checks["bottom_fractal"] = fractal_info
+
+                count, results = self._check_30m_signals()
+                std_checks["30m_signals"] = results
+                std_checks["30m_satisfied"] = count
+                std_checks["30m_min_required"] = self.min_signal_count
+            checks["standard_entry"] = std_checks
+
+        return {"signal": None, "checks": checks}
+
     def generate_signal(self, bar_idx: int = None) -> Optional[Dict[str, Any]]:
         if self.df_4h.empty or self.df_30m.empty:
             return None
@@ -1759,10 +1906,20 @@ class MultiTFFractalStrategy(BaseStrategy):
         if self._daily_stopped or self._trading_paused:
             return None
 
+        if not self._warmup_done:
+            self._warmup_done = True
+            current_time = self.df_4h.iloc[-1].get("open_time", pd.Timestamp.now())
+            self._last_signal_time = current_time
+            self._last_bottom_fractal_price = None
+            self._last_bottom_fractal_time = None
+            self._last_top_fractal_price = None
+            self._last_top_fractal_time = None
+            logger.info("[MTF] 首次运行热身: 跳过信号生成，等待新K线数据")
+            return None
+
         current_time = self.df_4h.iloc[-1].get("open_time", pd.Timestamp.now())
         if (self._last_signal_time is not None and current_time <= self._last_signal_time):
             return None
-        self._last_signal_time = current_time
 
         if self.position_state.direction is None:
             early_entry_signal = self._generate_early_entry_signal()
@@ -1773,15 +1930,19 @@ class MultiTFFractalStrategy(BaseStrategy):
                 early_short_count = early_short_entry_signal.get("satisfied_count", 0)
                 if early_short_count > early_long_count:
                     logger.info(f"[MTF] 提前入场双向冲突: 做多{early_long_count} vs 做空{early_short_count}，选择做空")
+                    self._last_signal_time = current_time
                     return early_short_entry_signal
                 else:
                     logger.info(f"[MTF] 提前入场双向冲突: 做多{early_long_count} vs 做空{early_short_count}，选择做多")
+                    self._last_signal_time = current_time
                     return early_entry_signal
             
             if early_entry_signal:
+                self._last_signal_time = current_time
                 return early_entry_signal
             
             if early_short_entry_signal:
+                self._last_signal_time = current_time
                 return early_short_entry_signal
             
             long_signal = self._generate_entry_signal()
@@ -1791,14 +1952,18 @@ class MultiTFFractalStrategy(BaseStrategy):
                 short_count = sum(1 for v in short_signal.get("signal_details", {}).values() if v)
                 if short_count > long_count:
                     logger.info(f"[MTF] 双向信号比较: 做多{long_count} vs 做空{short_count}，选择做空")
+                    self._last_signal_time = current_time
                     self._last_short_signal_time = current_time
                     return short_signal
                 else:
                     logger.info(f"[MTF] 双向信号比较: 做多{long_count} vs 做空{short_count}，选择做多")
+                    self._last_signal_time = current_time
                     return long_signal
             if long_signal:
+                self._last_signal_time = current_time
                 return long_signal
             if short_signal:
+                self._last_signal_time = current_time
                 self._last_short_signal_time = current_time
                 return short_signal
             
@@ -1806,6 +1971,7 @@ class MultiTFFractalStrategy(BaseStrategy):
         elif self.position_state.direction == "long":
             exit_signal = self._generate_long_exit_signal()
             if exit_signal:
+                self._last_signal_time = current_time
                 return exit_signal
             if not self.position_state.confirm_added:
                 state = self.position_state
@@ -1816,15 +1982,16 @@ class MultiTFFractalStrategy(BaseStrategy):
                 else:
                     confirm_signal = self._generate_confirm_signal()
                     if confirm_signal:
+                        self._last_signal_time = current_time
                         return confirm_signal
         elif self.position_state.direction == "short":
             exit_signal = self._generate_short_exit_signal()
             if exit_signal:
+                self._last_signal_time = current_time
                 return exit_signal
             if not self.position_state.confirm_added:
                 if (self._last_short_signal_time is not None and current_time <= self._last_short_signal_time):
                     return None
-                self._last_short_signal_time = current_time
                 state = self.position_state
                 current_close = float(self.df_4h.iloc[-1]["close"])
                 if (state.probe_entry_price and state.probe_entry_price > 0 and
@@ -1833,6 +2000,8 @@ class MultiTFFractalStrategy(BaseStrategy):
                 else:
                     confirm_signal = self._generate_short_confirm_signal()
                     if confirm_signal:
+                        self._last_signal_time = current_time
+                        self._last_short_signal_time = current_time
                         return confirm_signal
 
         return None
@@ -2228,10 +2397,15 @@ class MultiTFFractalStrategy(BaseStrategy):
 
 
 class MultiTFFractalStrategyExecutor:
+    WARMUP_DAYS = 60
+    LIVE_LIMIT_4H = 200
+    LIVE_LIMIT_30M = 200
+    LIVE_LIMIT_15M = 200
 
     def __init__(
         self,
         client,
+        notifier=None,
         symbol: str = "ETHUSDC",
         check_interval: int = 60,
         support_levels: List[float] = None,
@@ -2257,14 +2431,20 @@ class MultiTFFractalStrategyExecutor:
         k3_second_half_threshold: float = 0.4,
         early_entry_ratio: float = 0.40,
         min_early_entry_conditions: int = 2,
+        debug_signal: bool = True,
+        debug_interval: int = 6,
     ):
         self.client = client
+        self.notifier = notifier
         self.symbol = symbol
         self.check_interval = check_interval
         self.is_running = False
         self.leverage = leverage
         self.investment_ratio = investment_ratio
         self.enable_early_entry = enable_early_entry
+        self.debug_signal = debug_signal
+        self.debug_interval = debug_interval
+        self._debug_cycle_count = 0
 
         self.strategy = MultiTFFractalStrategy(
             symbol=symbol,
@@ -2293,16 +2473,152 @@ class MultiTFFractalStrategyExecutor:
             k3_second_half_threshold=k3_second_half_threshold,
         )
 
+    def _get_mode(self):
+        if self.client.is_simulated:
+            return "模拟盘(testnet)"
+        return "实盘"
+
+    def _safe_notify(self, callback):
+        try:
+            callback(self.notifier)
+        except Exception:
+            pass
+
+    async def _sync_position_from_exchange(self):
+        try:
+            positions = await self.client.get_positions(self.symbol)
+            if not isinstance(positions, list):
+                return
+            for pos in positions:
+                amt = float(pos.get("positionAmt", 0))
+                if amt > 0:
+                    self.strategy.position_state.direction = "long"
+                    self.strategy.position_state.probe_entry_price = float(pos.get("entryPrice", 0))
+                    self.strategy.position_state.position_quantity = amt
+                    self.strategy.position_state.stop_loss = float(pos.get("liquidationPrice", 0))
+                    logger.info(f"[MTF Executor] 同步交易所持仓: 做多 {amt} @ {pos.get('entryPrice', 0)}")
+                    return
+                elif amt < 0:
+                    self.strategy.position_state.direction = "short"
+                    self.strategy.position_state.probe_entry_price = float(pos.get("entryPrice", 0))
+                    self.strategy.position_state.position_quantity = abs(amt)
+                    self.strategy.position_state.stop_loss = float(pos.get("liquidationPrice", 0))
+                    logger.info(f"[MTF Executor] 同步交易所持仓: 做空 {abs(amt)} @ {pos.get('entryPrice', 0)}")
+                    return
+            logger.info("[MTF Executor] 同步交易所持仓: 空仓")
+        except Exception as e:
+            logger.warning(f"[MTF Executor] 同步持仓失败: {e}")
+
+    async def _warmup_replay(self):
+        from datetime import datetime, timedelta
+        from ..binance.client import BinanceRestClient
+        from ..utils.indicators import binance_klines_to_dataframe
+
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=self.WARMUP_DAYS)
+        start_ts = int(start_time.timestamp() * 1000)
+        end_ts = int(end_time.timestamp() * 1000)
+
+        logger.info(f"[MTF Executor] 启动热身回放: {self.WARMUP_DAYS}天历史数据 "
+                    f"({start_time.strftime('%Y-%m-%d')} ~ {end_time.strftime('%Y-%m-%d')})")
+
+        binance_client = BinanceRestClient(
+            api_key=self.client.api_key,
+            secret_key=self.client.secret_key,
+            is_simulated=self.client.is_simulated,
+        )
+        try:
+            logger.info("[MTF Executor] [热身] 获取4h K线...")
+            klines_4h = await binance_client.get_continuous_klines(
+                pair=self.symbol, contractType="PERPETUAL", interval="4h",
+                startTime=start_ts, endTime=end_ts, limit=1500,
+            )
+            if not (isinstance(klines_4h, list) and klines_4h):
+                logger.error("[MTF Executor] [热身] 4h K线数据异常")
+                return
+
+            logger.info("[MTF Executor] [热身] 获取30m K线...")
+            klines_30m = await binance_client.get_continuous_klines(
+                pair=self.symbol, contractType="PERPETUAL", interval="30m",
+                startTime=start_ts, endTime=end_ts, limit=1500,
+            )
+            if not (isinstance(klines_30m, list) and klines_30m):
+                logger.error("[MTF Executor] [热身] 30m K线数据异常")
+                return
+
+            df_15m = None
+            if self.enable_early_entry:
+                logger.info("[MTF Executor] [热身] 获取15m K线...")
+                klines_15m = await binance_client.get_continuous_klines(
+                    pair=self.symbol, contractType="PERPETUAL", interval="15m",
+                    startTime=start_ts, endTime=end_ts, limit=1500,
+                )
+                if isinstance(klines_15m, list) and klines_15m:
+                    df_15m = binance_klines_to_dataframe(klines_15m)
+        finally:
+            await binance_client.close()
+
+        df_4h = binance_klines_to_dataframe(klines_4h)
+        df_30m = binance_klines_to_dataframe(klines_30m)
+
+        if df_4h.empty:
+            logger.warning("[MTF Executor] [热身] 4h数据为空，跳过热身")
+            return
+
+        if "open_time" in df_4h.columns:
+            logger.info(f"[MTF Executor] [热身] 4h={len(df_4h)}条, 30m={len(df_30m)}条, "
+                        f"15m={len(df_15m) if df_15m is not None else 0}条, "
+                        f"范围={pd.to_datetime(df_4h.iloc[0]['open_time'], unit='ms')} ~ {pd.to_datetime(df_4h.iloc[-1]['open_time'], unit='ms')}")
+
+        self.strategy.inject_data(df_4h, df_30m, df_15m)
+
+        if len(df_4h) < 4:
+            logger.info("[MTF Executor] [热身] 历史数据不足4根K线，跳过早回放")
+            return
+
+        self.strategy._warmup_done = False
+        replay_count = 0
+
+        for i in range(len(df_4h) - 1):
+            bar_time = df_4h.iloc[i].get("open_time", None)
+            if bar_time is not None:
+                if isinstance(bar_time, (int, float)):
+                    self.strategy._last_signal_time = pd.Timestamp(bar_time, unit='ms')
+                else:
+                    self.strategy._last_signal_time = pd.Timestamp(bar_time)
+
+            bar_close = float(df_4h.iloc[i]["close"])
+            signal = self.strategy.generate_signal()
+            if signal:
+                logger.info(f"[MTF Executor] [热身] bar#{i} 检测到信号: {signal.get('action')} "
+                            f"(已忽略，热身不执行订单)")
+            replay_count += 1
+
+        self.strategy._warmup_done = True
+        logger.info(f"[MTF Executor] [热身] 回放完成: 共回放{replay_count}根4h K线")
+
     async def start(self):
         logger.info(f"[MTF Executor] 启动执行器 | symbol={self.symbol} | "
                    f"支撑位={self.strategy.support_levels} | "
                    f"探仓={self.strategy.probe_ratio*100:.0f}% | 加仓={self.strategy.confirm_ratio*100:.0f}%")
         self.is_running = True
 
+        if self.notifier:
+            self._safe_notify(lambda n: n.send_status("started", {
+                "symbol": self.symbol,
+                "mode": self._get_mode(),
+                "support_levels": self.strategy.support_levels,
+                "resistance_levels": self.strategy.resistance_levels,
+                "leverage": self.leverage,
+            }))
+
         initialized = await self.strategy.initialize(self.symbol)
         if not initialized:
             logger.error("[MTF Executor] 策略初始化失败")
             return
+
+        await self._sync_position_from_exchange()
+        await self._warmup_replay()
 
         try:
             while self.is_running:
@@ -2311,13 +2627,106 @@ class MultiTFFractalStrategyExecutor:
         except Exception as e:
             logger.error(f"[MTF Executor] 执行异常: {e}", exc_info=True)
         finally:
+            if self.notifier:
+                self._safe_notify(lambda n: n.send_status("stopped", {
+                    "symbol": self.symbol,
+                    "total_trades": self.strategy.total_trades if hasattr(self.strategy, 'total_trades') else 0,
+                    "pnl": "",
+                }))
             logger.info("[MTF Executor] 执行器已停止")
 
     async def stop(self):
         self.is_running = False
 
+    def _log_signal_diagnostic(self, diag: Dict[str, Any]):
+        checks = diag.get("checks", {})
+        prefix = f"[MTF Executor] [诊断 #{self._debug_cycle_count}]"
+
+        dw = checks.get("warmup", {})
+        if dw.get("passed") is False:
+            logger.info(f"{prefix} 热身阶段: {dw.get('reason', '跳过')}")
+            return
+
+        dd = checks.get("daily_pause", {})
+        if dd.get("paused"):
+            logger.info(f"{prefix} 风控暂停: daily_stopped或trading_paused")
+            return
+
+        dt = checks.get("time_dedup", {})
+        if dt.get("passed") is False:
+            logger.info(f"{prefix} 时间去重: current={dt.get('current_time','')} ≤ last={dt.get('last_signal_time','')}")
+            return
+
+        dp = checks.get("position_state", {})
+        if dp.get("passed") is False:
+            logger.info(f"{prefix} 持仓中: direction={dp.get('direction','')}, 等待出场/加仓信号")
+            return
+
+        parts = [f"{prefix} 无信号"]
+
+        ee = checks.get("early_entry", {})
+        if ee:
+            k1k2 = ee.get("k1k2_bottom", {})
+            if k1k2:
+                k1_parts = []
+                k1_parts.append(f"K1K2={'有' if k1k2.get('has_structure') else '无'}")
+                if k1k2.get('has_structure'):
+                    k1_parts.append(f"K2低={k1k2.get('k2_low',0):.1f}")
+                    k1_parts.append(f"K3形={k1k2.get('is_k3_forming','?')}")
+                    k1_parts.append(f"后半={k1k2.get('is_in_second_half','?')}")
+                else:
+                    k1_parts.append(f"信={k1k2.get('confidence',0):.0%}")
+                parts.append(f"提前: {'|'.join(k1_parts)}")
+
+                fb = ee.get("15m_first_buy", {})
+                sb = ee.get("15m_second_buy", {})
+                ut = ee.get("15m_uptrend", {})
+                sc = ee.get("satisfied_count", 0)
+                mr = ee.get("min_required", 2)
+                if fb or sb or ut:
+                    p15 = []
+                    p15.append(f"一买={'✓' if fb.get('passed') else '✗'}")
+                    p15.append(f"二买={'✓' if sb.get('passed') else '✗'}")
+                    p15.append(f"趋势={'✓' if ut.get('passed') else '✗'}")
+                    p15.append(f"({sc}/{mr})")
+                    parts.append(f"15m: {'|'.join(p15)}")
+
+        se = checks.get("standard_entry", {})
+        if se:
+            sz = se.get("support_zone", {})
+            if sz:
+                lvls = sz.get("levels", [])
+                parts.append(
+                    f"标准: 支撑={'✓' if sz.get('passed') else '✗'}"
+                    f"(价={sz.get('price',0)} 撑={lvls} 阈={sz.get('threshold',0):.1f})"
+                )
+
+            bf = se.get("bottom_fractal", {})
+            if bf:
+                parts.append(
+                    f"分型={'✓' if bf.get('passed') else '✗'}"
+                    f"(总分={bf.get('total_fractals',0)} 近底={bf.get('recent_bottoms',0)})"
+                )
+
+            sm = se.get("30m_signals")
+            if sm:
+                sm_parts = []
+                sm_parts.append(f"背={sm.get('divergence',False)}")
+                sm_parts.append(f"柱={sm.get('bullish_candlestick',False)}")
+                sm_parts.append(f"趋={sm.get('trendline_break',False)}")
+                sm_parts.append(f"金={sm.get('golden_cross',False)}")
+                parts.append(
+                    f"30m: {'|'.join(sm_parts)} "
+                    f"({se.get('30m_satisfied',0)}/{se.get('30m_min_required',1)})"
+                )
+
+        logger.info(" | ".join(parts))
+
     async def _run_once(self):
         from ..binance.client import BinanceRestClient
+
+        self._debug_cycle_count += 1
+        should_diag = self.debug_signal and (self._debug_cycle_count % self.debug_interval == 1)
 
         try:
             binance_client = BinanceRestClient(
@@ -2326,9 +2735,20 @@ class MultiTFFractalStrategyExecutor:
                 is_simulated=self.client.is_simulated,
             )
             try:
-                logger.info("[MTF Executor] 获取4h K线...")
+                if self.strategy._warmup_done:
+                    limit_4h = self.LIVE_LIMIT_4H
+                    limit_30m = self.LIVE_LIMIT_30M
+                    limit_15m = self.LIVE_LIMIT_15M
+                    mode_tag = "正常"
+                else:
+                    limit_4h = 800
+                    limit_30m = 800
+                    limit_15m = 1000
+                    mode_tag = "热身"
+
+                logger.info(f"[MTF Executor] [{mode_tag}] 获取4h K线 (limit={limit_4h})...")
                 klines_4h = await binance_client.get_continuous_klines(
-                    pair=self.symbol, contractType="PERPETUAL", interval="4h", limit=800,
+                    pair=self.symbol, contractType="PERPETUAL", interval="4h", limit=limit_4h,
                 )
                 if not (isinstance(klines_4h, list) and klines_4h):
                     logger.error("[MTF Executor] 4h K线数据异常")
@@ -2341,9 +2761,9 @@ class MultiTFFractalStrategyExecutor:
                     delay = (pd.Timestamp.now() - last_t).total_seconds() / 60
                     logger.info(f"[MTF Executor] 4h时间: {first_t} ~ {last_t} (延迟{delay:.1f}分钟)")
 
-                logger.info("[MTF Executor] 获取30m K线...")
+                logger.info(f"[MTF Executor] [{mode_tag}] 获取30m K线 (limit={limit_30m})...")
                 klines_30m = await binance_client.get_continuous_klines(
-                    pair=self.symbol, contractType="PERPETUAL", interval="30m", limit=800,
+                    pair=self.symbol, contractType="PERPETUAL", interval="30m", limit=limit_30m,
                 )
                 if not (isinstance(klines_30m, list) and klines_30m):
                     logger.error("[MTF Executor] 30m K线数据异常")
@@ -2360,9 +2780,9 @@ class MultiTFFractalStrategyExecutor:
                 
                 df_15m = None
                 if self.enable_early_entry:
-                    logger.info("[MTF Executor] 获取15m K线用于提前入场分析...")
+                    logger.info(f"[MTF Executor] [{mode_tag}] 获取15m K线用于提前入场分析 (limit={limit_15m})...")
                     klines_15m = await binance_client.get_continuous_klines(
-                        pair=self.symbol, contractType="PERPETUAL", interval="15m", limit=1000,
+                        pair=self.symbol, contractType="PERPETUAL", interval="15m", limit=limit_15m,
                     )
                     if isinstance(klines_15m, list) and klines_15m:
                         df_15m = binance_klines_to_dataframe(klines_15m)
@@ -2388,12 +2808,20 @@ class MultiTFFractalStrategyExecutor:
             if signal:
                 logger.info(f"[MTF Executor] >>> 信号: action={signal['action']}, "
                            f"reason={signal.get('reason', '')}, ratio={signal.get('position_ratio', 0)}")
+                if self.notifier:
+                    self._safe_notify(lambda n: n.send_trade_signal(signal, self.symbol))
                 await self._execute_signal(signal)
             else:
-                logger.info("[MTF Executor] 无交易信号")
+                if should_diag:
+                    diagnostic = self.strategy.generate_signal_diagnostic()
+                    self._log_signal_diagnostic(diagnostic)
+                else:
+                    logger.debug("[MTF Executor] 无交易信号")
 
         except Exception as e:
             logger.error(f"[MTF Executor] 运行异常: {e}", exc_info=True)
+            if self.notifier:
+                self._safe_notify(lambda n: n.send_error(str(e), self.symbol))
 
     async def _execute_signal(self, signal: Dict[str, Any]):
         action = signal.get("action", "")
@@ -2443,10 +2871,12 @@ class MultiTFFractalStrategyExecutor:
             return
 
         result = await self.client.place_order(
-            symbol=self.symbol, side="BUY", position_side="LONG",
+            symbol=self.symbol, side="BUY", position_side="BOTH",
             order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 试探开多: 投入=${investment:.2f} | qty={qty} | 止损={stop_loss:.2f}")
+        if self.notifier:
+            self._safe_notify(lambda n: n.send_order_result("PROBE_ENTRY", result, self.symbol))
         self.strategy.update_position_from_signal(signal)
         return result
 
@@ -2462,10 +2892,12 @@ class MultiTFFractalStrategyExecutor:
             return
 
         result = await self.client.place_order(
-            symbol=self.symbol, side="BUY", position_side="LONG",
+            symbol=self.symbol, side="BUY", position_side="BOTH",
             order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 确认加仓: 投入=${investment:.2f} | qty={qty} | 新止损={stop_loss:.2f}")
+        if self.notifier:
+            self._safe_notify(lambda n: n.send_order_result("CONFIRM_ADD", result, self.symbol))
         self.strategy.update_position_from_signal(signal)
         return result
 
@@ -2481,12 +2913,14 @@ class MultiTFFractalStrategyExecutor:
             return
 
         result = await self.client.place_order(
-            symbol=self.symbol, side="BUY", position_side="LONG",
+            symbol=self.symbol, side="BUY", position_side="BOTH",
             order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 提前入场开多: 投入=${investment:.2f} | qty={qty} | "
                    f"止损={stop_loss:.2f} | 置信度={signal.get('confidence', 0):.2f} | "
                    f"信号类型={signal.get('signal_type', '')}")
+        if self.notifier:
+            self._safe_notify(lambda n: n.send_order_result("EARLY_ENTRY", result, self.symbol))
         self.strategy.update_position_from_signal(signal)
         return result
 
@@ -2502,12 +2936,14 @@ class MultiTFFractalStrategyExecutor:
             return
 
         result = await self.client.place_order(
-            symbol=self.symbol, side="SELL", position_side="SHORT",
+            symbol=self.symbol, side="SELL", position_side="BOTH",
             order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 提前做空入场: 投入=${investment:.2f} | qty={qty} | "
                    f"止损={stop_loss:.2f} | 置信度={signal.get('confidence', 0):.2f} | "
                    f"信号类型={signal.get('signal_type', '')}")
+        if self.notifier:
+            self._safe_notify(lambda n: n.send_order_result("EARLY_SHORT_ENTRY", result, self.symbol))
         self.strategy.update_position_from_signal(signal)
         return result
 
@@ -2523,10 +2959,12 @@ class MultiTFFractalStrategyExecutor:
             return
 
         result = await self.client.place_order(
-            symbol=self.symbol, side="SELL", position_side="SHORT",
+            symbol=self.symbol, side="SELL", position_side="BOTH",
             order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 试探开空: 投入=${investment:.2f} | qty={qty} | 止损={stop_loss:.2f}")
+        if self.notifier:
+            self._safe_notify(lambda n: n.send_order_result("PROBE_ENTRY_SHORT", result, self.symbol))
         self.strategy.update_position_from_signal(signal)
         return result
 
@@ -2542,10 +2980,12 @@ class MultiTFFractalStrategyExecutor:
             return
 
         result = await self.client.place_order(
-            symbol=self.symbol, side="SELL", position_side="SHORT",
+            symbol=self.symbol, side="SELL", position_side="BOTH",
             order_type="LIMIT", quantity=qty, price=price,
         )
         logger.info(f"[MTF Executor] 确认做空加仓: 投入=${investment:.2f} | qty={qty} | 新止损={stop_loss:.2f}")
+        if self.notifier:
+            self._safe_notify(lambda n: n.send_order_result("CONFIRM_ADD_SHORT", result, self.symbol))
         self.strategy.update_position_from_signal(signal)
         return result
 
@@ -2570,11 +3010,13 @@ class MultiTFFractalStrategyExecutor:
         result = await self.client.place_order(
             symbol=self.symbol,
             side="SELL",
-            position_side="LONG",
+            position_side="BOTH",
             order_type="MARKET",
             quantity=qty,
         )
         logger.info(f"[MTF Executor] 平多单结果: {result.get('msg', result.get('error', 'OK'))}")
+        if self.notifier:
+            self._safe_notify(lambda n: n.send_order_result("CLOSE_LONG", result, self.symbol))
 
     async def _close_all_short(self, usdt_balance: float):
         qty = await self._get_position_quantity("SHORT")
@@ -2586,8 +3028,10 @@ class MultiTFFractalStrategyExecutor:
         result = await self.client.place_order(
             symbol=self.symbol,
             side="BUY",
-            position_side="SHORT",
+            position_side="BOTH",
             order_type="MARKET",
             quantity=qty,
         )
         logger.info(f"[MTF Executor] 平空单结果: {result.get('msg', result.get('error', 'OK'))}")
+        if self.notifier:
+            self._safe_notify(lambda n: n.send_order_result("CLOSE_SHORT", result, self.symbol))

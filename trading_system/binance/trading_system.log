@@ -26,3 +26,5 @@
 2026-05-18 22:28:18,147 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
 2026-05-18 22:29:26,009 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
 2026-05-18 22:29:26,009 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-20 22:51:56,436 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-05-20 22:51:56,436 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db

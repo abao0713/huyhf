@@ -430,7 +430,7 @@ class BacktestEngine:
                 return df
 
             if "open_time" in df.columns:
-                df["open_time"] = pd.to_datetime(df["open_time"])
+                df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
 
                 if start_date:
                     df = df[df["open_time"] >= pd.Timestamp(start_date)]

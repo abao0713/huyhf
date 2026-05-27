@@ -39,6 +39,10 @@ class BinanceConfig:
         self.proxy_enabled = bool(proxy_host and proxy_port > 0)
         self.proxy = ProxyConfig(proxy_host, proxy_port, proxy_protocol) if self.proxy_enabled else None
 
+        self.dingtalk_access_token = os.getenv("DINGTALK_WEBHOOK_ACCESS_TOKEN", "")
+        self.dingtalk_secret = os.getenv("DINGTALK_WEBHOOK_SECRET", "")
+        self.dingtalk_enabled = bool(self.dingtalk_access_token and self.dingtalk_secret)
+
         if self.is_simulated:
             self.rest_base_url = "https://testnet.binancefuture.com"
         else:
