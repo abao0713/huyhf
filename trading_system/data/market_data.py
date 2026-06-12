@@ -240,6 +240,109 @@ async def close_client():
         _client = None
 
 
+# ─── CCXT 数据适配器 ───
+# 为 Crypto_Chan_4H_Master_v1 策略提供统一的多交易所数据获取接口
+
+class CCXTDataProvider:
+    """
+    使用 CCXT 库获取交易所 OHLCV 数据的适配器
+
+    设计目的：
+    - 封装 CCXT 库的复杂性，提供统一的 OHLCV 数据获取接口
+    - 支持任意 CCXT 支持的交易所（默认 Binance 合约）
+    - 输出格式与现有 MarketDataClient 兼容的 DataFrame
+
+    使用示例:
+        provider = CCXTDataProvider("binance")
+        df = provider.fetch_ohlcv("ETH/USDC", "4h", limit=500)
+        dfs = provider.fetch_multiple_timeframes("ETH/USDC", ["4h", "1h", "15m"])
+    """
+
+    def __init__(self, exchange_name: str = "binance"):
+        """初始化 CCXT 数据适配器
+
+        Args:
+            exchange_name: CCXT 交易所 ID，如 'binance', 'okx', 'bybit'
+        """
+        self.exchange_name = exchange_name
+        self._exchange = None  # 延迟初始化，避免在 import 时建立连接
+
+    def _get_exchange(self):
+        """获取或创建 CCXT 交易所实例（懒加载模式）
+
+        Returns:
+            ccxt.Exchange 实例
+
+        Raises:
+            ImportError: 如果 ccxt 库未安装
+        """
+        if self._exchange is None:
+            try:
+                import ccxt  # 延迟导入，允许在无 CCXT 环境下加载策略模块
+                # 启用速率限制防止被交易所封禁，默认使用合约市场
+                self._exchange = getattr(ccxt, self.exchange_name)({
+                    'enableRateLimit': True,
+                    'options': {'defaultType': 'future'},
+                })
+            except ImportError:
+                logger.error("[CCXT] ccxt 库未安装，请运行: pip install ccxt")
+                raise
+        return self._exchange
+
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "4h", limit: int = 500,
+                    since_ms: Optional[int] = None) -> pd.DataFrame:
+        """
+        获取单周期 OHLCV K 线数据并返回标准化 DataFrame
+
+        Args:
+            symbol: 交易对，如 "BTC/USDC"（CCXT 格式，用 '/' 分隔）
+            timeframe: K线周期，如 "4h", "1h", "15m", "1d"
+            limit: 获取的最大 K 线条数
+            since_ms: 起始时间戳（毫秒），None 表示获取最新数据
+
+        Returns:
+            pd.DataFrame with columns: open_time, open, high, low, close, volume
+            如果获取失败则返回空 DataFrame
+        """
+        try:
+            exchange = self._get_exchange()
+            # 调用 CCXT 统一 API 获取 OHLCV 数据
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit, since=since_ms)
+            if not ohlcv:
+                return pd.DataFrame()
+            # 将 CCXT 返回的 list[list] 格式转换为标准化 DataFrame
+            df = pd.DataFrame(ohlcv, columns=["open_time", "open", "high", "low", "close", "volume"])
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")  # 毫秒时间戳 → datetime
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = df[col].astype(float)  # 确保数值类型统一
+            return df
+        except Exception as e:
+            logger.error(f"[CCXT] 获取 OHLCV 失败: {e}")
+            return pd.DataFrame()  # 容错：返回空 DataFrame 而非抛出异常
+
+    def fetch_multiple_timeframes(self, symbol: str, timeframes: List[str],
+                                  limit: int = 500) -> Dict[str, pd.DataFrame]:
+        """
+        批量获取多个时间框架的 OHLCV 数据
+
+        用于策略的初始化阶段，一次性加载 4H/1H/15M/1D 等多周期数据。
+
+        Args:
+            symbol: 交易对
+            timeframes: 时间框架列表，如 ["4h", "1h", "15m", "1d"]
+            limit: 每个时间框架的 K 线条数
+
+        Returns:
+            Dict[str, pd.DataFrame]: key 为时间框架字符串，value 为对应 DataFrame
+        """
+        result = {}
+        for tf in timeframes:
+            df = self.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
+            result[tf] = df
+            logger.info(f"[CCXT] {symbol} {tf}: {len(df)} 条K线")
+        return result
+
+
 if __name__ == "__main__":
     async def test():
         client = MarketDataClient()
