@@ -47,6 +47,8 @@ class Extension(old_Extension):
             language=None,
             f2py_options=None,
             module_dirs=None,
+            extra_c_compile_args=None,
+            extra_cxx_compile_args=None,
             extra_f77_compile_args=None,
             extra_f90_compile_args=None,):
 
@@ -83,21 +85,17 @@ class Extension(old_Extension):
         # numpy_distutils features
         self.f2py_options = f2py_options or []
         self.module_dirs = module_dirs or []
+        self.extra_c_compile_args = extra_c_compile_args or []
+        self.extra_cxx_compile_args = extra_cxx_compile_args or []
         self.extra_f77_compile_args = extra_f77_compile_args or []
         self.extra_f90_compile_args = extra_f90_compile_args or []
 
         return
 
     def has_cxx_sources(self):
-        for source in self.sources:
-            if cxx_ext_re(str(source)):
-                return True
-        return False
+        return any(cxx_ext_re(str(source)) for source in self.sources)
 
     def has_f2py_sources(self):
-        for source in self.sources:
-            if fortran_pyf_ext_re(source):
-                return True
-        return False
+        return any(fortran_pyf_ext_re(source) for source in self.sources)
 
 # class Extension

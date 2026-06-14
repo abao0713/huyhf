@@ -474,6 +474,9 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         self._first_buy_low: float = 0.0
         self._first_sell_high: float = 0.0
 
+        # 加仓计数
+        self._add_count: int = 0
+
         logger.info(f"[{self.name}] 策略初始化完成: symbol={self.symbol}, "
                    f"timeframes=4H/1H/15M")
 
@@ -490,6 +493,37 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
             self.df_15m = df_15m.copy()
         if df_daily is not None and not df_daily.empty:
             self.df_daily = df_daily.copy()
+        self._calculate_all_indicators()
+        self._run_chan_analysis()
+
+    def inject_data_incremental(self, df_4h: pd.DataFrame, df_1h: pd.DataFrame = None,
+                                 df_15m: pd.DataFrame = None, df_daily: pd.DataFrame = None,
+                                 update_1h: bool = False, update_15m: bool = False) -> None:
+        """增量注入多周期K线数据（优化性能）
+
+        Args:
+            df_4h: 4H K线数据（每次必更新）
+            df_1h: 1H K线数据（仅在 update_1h=True 时更新）
+            df_15m: 15M K线数据（仅在 update_15m=True 时更新）
+            df_daily: 日线数据（每次必更新）
+            update_1h: 是否更新1H数据
+            update_15m: 是否更新15M数据
+        """
+        # 4H 和日线数据每次必更新
+        if df_4h is not None and not df_4h.empty:
+            self.df_4h = df_4h.copy()
+        if df_daily is not None and not df_daily.empty:
+            self.df_daily = df_daily.copy()
+
+        # 1H 数据仅在需要时更新
+        if update_1h and df_1h is not None and not df_1h.empty:
+            self.df_1h = df_1h.copy()
+
+        # 15M 数据仅在需要时更新
+        if update_15m and df_15m is not None and not df_15m.empty:
+            self.df_15m = df_15m.copy()
+
+        # 重新计算指标和缠论分析
         self._calculate_all_indicators()
         self._run_chan_analysis()
 
@@ -1304,6 +1338,228 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
 
     async def on_order_update(self, order_data: Dict[str, Any]) -> None:
         pass
+
+    def _process_pending_limit_orders(self, open_orders: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """处理待成交的限价单
+
+        核心逻辑：
+        1. 接收执行器通过 API 查询到的实际订单状态
+        2. 遍历待成交订单列表，根据实际状态更新内部状态
+        3. 已成交订单调用 mark_order_filled()
+        4. 已取消订单调用 mark_order_cancelled()
+        5. 返回仍待成交的订单列表
+
+        Args:
+            open_orders: 从 API 查询到的实际未成交订单列表（可选）
+                        如果提供，将根据实际状态更新内部订单列表
+
+        Returns:
+            仍待成交的订单列表，每个订单包含 order_id, price, side, quantity, action 等信息
+        """
+        if not hasattr(self, '_pending_limit_orders'):
+            self._pending_limit_orders: List[Dict[str, Any]] = []
+        if not hasattr(self, '_cancelled_orders'):
+            self._cancelled_orders: List[Dict[str, Any]] = []
+        if not hasattr(self, '_filled_orders'):
+            self._filled_orders: List[Dict[str, Any]] = []
+
+        # 如果没有提供实际订单列表，仅返回内部待成交订单
+        if open_orders is None:
+            pending_orders = self.get_pending_orders()
+            if pending_orders:
+                logger.debug(f"[{self.name}] 待成交限价单: {len(pending_orders)} 个")
+                for order in pending_orders:
+                    logger.debug(f"  - {order['action']} {order['side']} @ {order['price']:.4f}, "
+                               f"order_id={order['order_id']}")
+            return pending_orders
+
+        # 构建实际订单的 order_id -> order 映射
+        open_orders_map = {}
+        for order in open_orders:
+            order_id = str(order.get("orderId") or order.get("order_id") or "")
+            if order_id:
+                open_orders_map[order_id] = order
+
+        # 遍历内部待成交订单，根据实际状态更新
+        orders_to_remove = []
+        for pending_order in self._pending_limit_orders:
+            order_id = pending_order.get("order_id")
+            if not order_id:
+                continue
+
+            # 检查实际订单状态
+            actual_order = open_orders_map.get(order_id)
+
+            if actual_order is None:
+                # 订单不在未成交列表中，可能已成交或已取消
+                # 需要单独查询订单状态
+                logger.debug(f"[{self.name}] 订单 {order_id} 不在未成交列表中，需查询状态")
+                # 这里假设订单已成交（实际应由执行器查询后调用 mark_order_filled）
+                continue
+
+            # 检查实际订单状态
+            status = actual_order.get("status")
+            if status == "FILLED":
+                # 订单已完全成交
+                fill_price = actual_order.get("avgPrice") or actual_order.get("price")
+                self.mark_order_filled(order_id, float(fill_price) if fill_price else None)
+                orders_to_remove.append(pending_order)
+                logger.info(f"[{self.name}] 订单已成交: {pending_order['action']} {pending_order['side']} @ "
+                           f"{pending_order['price']:.4f}, fill_price={fill_price}")
+            elif status == "CANCELED":
+                # 订单已取消
+                self.mark_order_cancelled(order_id, reason="API查询到已取消状态")
+                orders_to_remove.append(pending_order)
+                logger.info(f"[{self.name}] 订单已取消: {pending_order['action']} {pending_order['side']} @ "
+                           f"{pending_order['price']:.4f}")
+            elif status == "PARTIALLY_FILLED":
+                # 订单部分成交，继续等待
+                logger.debug(f"[{self.name}] 订单部分成交: {order_id}, 继续等待")
+            else:
+                # 其他状态（如 NEW），继续等待
+                logger.debug(f"[{self.name}] 订单状态: {order_id}, status={status}")
+
+        # 移除已处理的订单
+        for order in orders_to_remove:
+            if order in self._pending_limit_orders:
+                self._pending_limit_orders.remove(order)
+
+        # 返回仍待成交的订单列表
+        pending_orders = self.get_pending_orders()
+        if pending_orders:
+            logger.info(f"[{self.name}] 仍待成交限价单: {len(pending_orders)} 个")
+            for order in pending_orders:
+                logger.info(f"  - {order['action']} {order['side']} @ {order['price']:.4f}, "
+                           f"order_id={order['order_id']}")
+
+        return pending_orders
+
+    def add_pending_order(self, order_id: str, price: float, side: str, quantity: float,
+                         action: str, created_bar: int) -> None:
+        """添加待成交订单到跟踪列表
+
+        Args:
+            order_id: 订单ID
+            price: 订单价格
+            side: 订单方向 BUY/SELL
+            quantity: 订单数量
+            action: 订单动作 OPEN_LONG/OPEN_SHORT 等
+            created_bar: 创建时的 bar 索引
+        """
+        if not hasattr(self, '_pending_limit_orders'):
+            self._pending_limit_orders: List[Dict[str, Any]] = []
+
+        order = {
+            "order_id": order_id,
+            "price": price,
+            "side": side,
+            "quantity": quantity,
+            "action": action,
+            "created_bar": created_bar,
+            "status": "pending"  # pending, filled, cancelled
+        }
+        self._pending_limit_orders.append(order)
+        logger.info(f"[{self.name}] 添加待成交订单: {action} {side} @ {price:.4f}, "
+                   f"order_id={order_id}")
+
+    def mark_order_filled(self, order_id: str, fill_price: float = None) -> None:
+        """标记订单已成交
+
+        Args:
+            order_id: 订单ID
+            fill_price: 实际成交价格（可选）
+        """
+        if not hasattr(self, '_pending_limit_orders'):
+            return
+        if not hasattr(self, '_filled_orders'):
+            self._filled_orders: List[Dict[str, Any]] = []
+
+        for order in self._pending_limit_orders[:]:
+            if order.get("order_id") == order_id:
+                order["status"] = "filled"
+                order["fill_price"] = fill_price or order["price"]
+                self._filled_orders.append(order)
+                self._pending_limit_orders.remove(order)
+                logger.info(f"[{self.name}] 订单已成交: {order['action']} {order['side']} @ "
+                           f"{order['price']:.4f}, fill_price={order.get('fill_price', 0):.4f}")
+                break
+
+    def mark_order_cancelled(self, order_id: str, reason: str = "") -> None:
+        """标记订单已取消
+
+        Args:
+            order_id: 订单ID
+            reason: 取消原因
+        """
+        if not hasattr(self, '_pending_limit_orders'):
+            return
+        if not hasattr(self, '_cancelled_orders'):
+            self._cancelled_orders: List[Dict[str, Any]] = []
+
+        for order in self._pending_limit_orders[:]:
+            if order.get("order_id") == order_id:
+                order["status"] = "cancelled"
+                order["cancel_reason"] = reason
+                self._cancelled_orders.append(order)
+                self._pending_limit_orders.remove(order)
+                logger.info(f"[{self.name}] 订单已取消: {order['action']} {order['side']} @ "
+                           f"{order['price']:.4f}, reason={reason}")
+                break
+
+    def get_pending_orders(self) -> List[Dict[str, Any]]:
+        """获取所有待成交订单"""
+        if not hasattr(self, '_pending_limit_orders'):
+            return []
+        return self._pending_limit_orders.copy()
+
+    def cancel_pending_orders_for_action(self, action: str) -> List[str]:
+        """取消指定动作的所有待成交订单
+
+        当新信号到来时，如果有反向或未成交的旧单，需要取消
+
+        Args:
+            action: 新信号的动作，如 OPEN_LONG, OPEN_SHORT
+
+        Returns:
+            被取消的订单ID列表
+        """
+        if not hasattr(self, '_pending_limit_orders'):
+            return []
+
+        cancelled_ids = []
+        orders_to_cancel = []
+
+        # 找出需要取消的订单
+        for order in self._pending_limit_orders:
+            old_action = order.get("action", "")
+            # 如果新信号是开多，取消所有开空和关多的待成交单
+            # 如果新信号是开空，取消所有开多和关空的待成交单
+            should_cancel = False
+
+            if action == "OPEN_LONG":
+                if old_action in ("OPEN_SHORT", "CLOSE_LONG"):
+                    should_cancel = True
+            elif action == "OPEN_SHORT":
+                if old_action in ("OPEN_LONG", "CLOSE_SHORT"):
+                    should_cancel = True
+            elif action.startswith("CLOSE"):
+                # 平仓信号取消同方向的开仓单
+                if "LONG" in action and old_action == "OPEN_LONG":
+                    should_cancel = True
+                elif "SHORT" in action and old_action == "OPEN_SHORT":
+                    should_cancel = True
+
+            if should_cancel:
+                orders_to_cancel.append(order)
+
+        # 执行取消
+        for order in orders_to_cancel:
+            order_id = order.get("order_id")
+            if order_id:
+                self.mark_order_cancelled(order_id, reason=f"新信号 {action} 取代")
+                cancelled_ids.append(order_id)
+
+        return cancelled_ids
 
 
 # ==============================================================================

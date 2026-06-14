@@ -1,14 +1,69 @@
 import asyncio
 import logging
+import sys
+import time
+from pathlib import Path
 from typing import Dict, Any, Optional, List
-from binance.um_futures import UMFutures
+
+# 添加项目根目录到 Python 路径
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
+    DerivativesTradingUsdsFutures,
+)
+from binance_common.configuration import ConfigurationRestAPI
+from binance_common.constants import (
+    DERIVATIVES_TRADING_USDS_FUTURES_REST_API_PROD_URL,
+    DERIVATIVES_TRADING_USDS_FUTURES_REST_API_TESTNET_URL, DERIVATIVES_TRADING_USDS_FUTURES_REST_API_DEMO_URL,
+    DERIVATIVES_TRADING_USDS_FUTURES_WS_API_PROD_URL,
+)
+from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    NewOrderSideEnum,
+    NewOrderPositionSideEnum,
+    NewOrderTimeInForceEnum,
+    NewOrderNewOrderRespTypeEnum,
+)
+from pydantic import BaseModel
 from trading_system.binance.config import config as binance_config
 
 logger = logging.getLogger(__name__)
 
+# 全局时间偏移量（毫秒）
+_time_offset_ms: int = 0
+
+
+def _set_time_offset(offset_ms: int):
+    """设置全局时间偏移量"""
+    global _time_offset_ms
+    _time_offset_ms = offset_ms
+    logger.info(f"时间偏移已设置: {offset_ms}ms")
+
+
+def _get_timestamp_with_offset() -> int:
+    """返回带偏移的时间戳（毫秒）"""
+    return int(time.time() * 1000) + _time_offset_ms
+
+
+def _patch_binance_timestamp():
+    """Patch binance_common.utils.get_timestamp 函数"""
+    import binance_common.utils as binance_utils
+    binance_utils.get_timestamp = _get_timestamp_with_offset
+    logger.info("已 patch binance_common.utils.get_timestamp")
+
+
+def _to_dict(data: Any) -> Any:
+    """将 Pydantic 模型或列表转换为 dict"""
+    if isinstance(data, BaseModel):
+        return data.model_dump()
+    elif isinstance(data, list):
+        return [_to_dict(item) for item in data]
+    return data
+
 
 class BinanceRestClient:
-    """Binance REST API客户端（基于官方 UMFutures SDK）"""
+    """Binance REST API客户端（基于官方 binance-sdk-derivatives-trading-usds-futures SDK）"""
 
     def __init__(self, api_key: str = None, secret_key: str = None, is_simulated: bool = False):
         """初始化Binance REST API客户端
@@ -20,13 +75,51 @@ class BinanceRestClient:
         self.secret_key = secret_key or binance_config.secret_key
         self.is_simulated = is_simulated or binance_config.is_simulated
 
-        if self.is_simulated:
-            base_url = "https://testnet.binancefuture.com"
-        else:
-            base_url = "https://fapi.binance.com"
+        # 选择正确的 base_url
+        base_url = DERIVATIVES_TRADING_USDS_FUTURES_REST_API_TESTNET_URL if self.is_simulated else DERIVATIVES_TRADING_USDS_FUTURES_REST_API_PROD_URL
 
-        self._sdk = UMFutures(key=self.api_key, secret=self.secret_key, base_url=base_url)
-        self._sdk.session.trust_env = False
+        # 创建配置
+        configuration = ConfigurationRestAPI(
+            api_key=self.api_key,
+            api_secret=self.secret_key,
+            base_path=base_url,
+        )
+
+        # 初始化客户端
+        self._sdk = DerivativesTradingUsdsFutures(config_rest_api=configuration)
+        
+        # 同步服务器时间并应用时间偏移
+        self._sync_server_time()
+        
+        # Patch SDK 的时间戳函数
+        _patch_binance_timestamp()
+
+    def _sync_server_time(self):
+        """同步服务器时间，计算本地时间与服务器时间的偏移量"""
+        try:
+            import requests
+            local_time_before = int(time.time() * 1000)
+            
+            # 调用 Binance 时间 API
+            base_url = DERIVATIVES_TRADING_USDS_FUTURES_REST_API_TESTNET_URL if self.is_simulated else DERIVATIVES_TRADING_USDS_FUTURES_REST_API_PROD_URL
+            response = requests.get(f"{base_url}/fapi/v1/time", timeout=5000)
+            response.raise_for_status()
+            
+            server_time = response.json().get("serverTime")
+            local_time_after = int(time.time() * 1000)
+            
+            if server_time:
+                # 计算本地时间（取请求前后的平均值）
+                local_time_avg = (local_time_before + local_time_after) // 2
+                offset = server_time - local_time_avg
+                
+                _set_time_offset(offset)
+                logger.info(f"时间同步成功: 服务器时间={server_time}, 本地时间={local_time_avg}, 偏移量={offset}ms")
+            else:
+                logger.warning("服务器时间获取失败，使用时间偏移 0")
+                
+        except Exception as e:
+            logger.error(f"时间同步失败: {e}，使用时间偏移 0")
 
     def _run_sync(self, func, *args, **kwargs):
         loop = asyncio.get_event_loop()
@@ -55,16 +148,27 @@ class BinanceRestClient:
         :param time_in_force: 有效期限 "GTC" / "IOC" / "FOK"
         :return: 下单结果
         """
-        params = dict(symbol=symbol, side=side, type=order_type, quantity=quantity,
-                      positionSide=position_side)
+        # 转换字符串参数为枚举
+        side_enum = NewOrderSideEnum(side)
+        position_side_enum = NewOrderPositionSideEnum(position_side)
+        
+        params = {
+            "symbol": symbol,
+            "side": side_enum,
+            "type": order_type,
+            "quantity": quantity,
+            "position_side": position_side_enum,
+        }
+        
         if order_type == "LIMIT":
             params["price"] = price
-            params["timeInForce"] = time_in_force
+            params["time_in_force"] = NewOrderTimeInForceEnum(time_in_force)
 
-        logger.info(f"[place_order] Request: {params}")
+        logger.info(f"[place_order] Request: symbol={symbol}, side={side}, type={order_type}, quantity={quantity}, price={price}")
 
         try:
-            result = await self._run_sync(self._sdk.new_order, **params)
+            response = await self._run_sync(self._sdk.rest_api.new_order, **params)
+            result = _to_dict(response.data())
             logger.info(f"[place_order] Order placed: {result}")
             return result
         except Exception as e:
@@ -83,17 +187,17 @@ class BinanceRestClient:
         :param orig_client_order_id: 客户端订单ID
         :return: 订单信息
         """
-        params = dict(symbol=symbol)
+        params = {"symbol": symbol}
         if order_id:
-            params["orderId"] = order_id
+            params["order_id"] = order_id
         if orig_client_order_id:
-            params["origClientOrderId"] = orig_client_order_id
+            params["orig_client_order_id"] = orig_client_order_id
 
         logger.info(f"[get_order] Request: {params}")
 
         try:
-            result = await self._run_sync(self._sdk.query_order, **params)
-            return result
+            response = await self._run_sync(self._sdk.rest_api.query_order, **params)
+            return _to_dict(response.data())
         except Exception as e:
             logger.error(f"[get_order] Query failed: {e}")
             return {"error": str(e), "msg": str(e)}
@@ -110,46 +214,134 @@ class BinanceRestClient:
         :param orig_client_order_id: 客户端订单ID
         :return: 取消结果
         """
-        params = dict(symbol=symbol)
+        params = {"symbol": symbol}
         if order_id:
-            params["orderId"] = order_id
+            params["order_id"] = order_id
         if orig_client_order_id:
-            params["origClientOrderId"] = orig_client_order_id
+            params["orig_client_order_id"] = orig_client_order_id
 
         logger.info(f"[cancel_order] Request: {params}")
 
         try:
-            result = await self._run_sync(self._sdk.cancel_order, **params)
+            response = await self._run_sync(self._sdk.rest_api.cancel_order, **params)
+            result = _to_dict(response.data())
             logger.info(f"[cancel_order] Cancelled: {result}")
             return result
         except Exception as e:
             logger.error(f"[cancel_order] Cancel failed: {e}")
             return {"error": str(e), "msg": str(e)}
 
-    async def get_account(self) -> Dict[str, Any]:
-        """获取账户信息
-        :return: 账户信息
+    async def get_open_orders(self, symbol: str = None) -> List[Dict[str, Any]]:
+        """查询所有未成交订单（使用 current_all_open_orders API）
+        :param symbol: 交易对（可选），不传则返回所有交易对的未成交订单
+        :return: 未成交订单列表
+        """
+        params = {}
+        if symbol:
+            params["symbol"] = symbol
+
+        logger.info(f"[get_open_orders] Request: {params}")
+
+        try:
+            response = await self._run_sync(self._sdk.rest_api.current_all_open_orders, **params)
+            result = _to_dict(response.data())
+            if isinstance(result, list):
+                logger.info(f"[get_open_orders] 获取到 {len(result)} 个未成交订单")
+                return result
+            return []
+        except Exception as e:
+            logger.error(f"[get_open_orders] Failed: {e}")
+            return []
+
+    @staticmethod
+    def is_order_filled(order: Dict[str, Any]) -> bool:
+        """判断订单是否完全成交
+        :param order: 订单信息字典
+        :return: 是否完全成交
+        """
+        return order.get("status") == "FILLED"
+
+    @staticmethod
+    def is_order_partially_filled(order: Dict[str, Any]) -> bool:
+        """判断订单是否部分成交
+        :param order: 订单信息字典
+        :return: 是否部分成交
+        """
+        return order.get("status") == "PARTIALLY_FILLED"
+
+    @staticmethod
+    def is_order_cancelled(order: Dict[str, Any]) -> bool:
+        """判断订单是否已取消
+        :param order: 订单信息字典
+        :return: 是否已取消
+        """
+        return order.get("status") == "CANCELED"
+
+   
+
+    async def get_account_balance(self) -> Dict[str, Any]:
+        """获取账户余额（使用 futures_account_balance_v3 API）
+        
+        返回字段说明：
+        - positionInitialMargin: 仓位占初始保证金
+        - openOrderInitialMargin: 挂单占初始保证金
+        - crossWalletBalance: 跨仓钱包余额
+        - crossUnPnl: 跨仓未实现盈亏
+        - availableBalance: 可用余额
+        - maxWithdrawAmount: 最大可提
+        
+        :return: 账户余额信息字典，包含上述字段
         """
         try:
-            result = await self._run_sync(self._sdk.account, recvWindow=6000)
-            return result
+            response = await self._run_sync(self._sdk.rest_api.futures_account_balance_v3, recv_window=6000)
+            result = _to_dict(response.data())
+            
+            # futures_account_balance_v3 返回的是列表，找到 USDT 资产
+            if isinstance(result, list):
+                usdt_balance = None
+                for asset in result:
+                    if asset.get("asset") == "USDT":
+                        usdt_balance = asset
+                        break
+                
+                if usdt_balance:
+                    # 提取需要的字段（SDK返回snake_case格式）
+                    balance_info = {
+                        "positionInitialMargin": float(usdt_balance.get("position_initial_margin", 0)),
+                        "openOrderInitialMargin": float(usdt_balance.get("open_order_initial_margin", 0)),
+                        "crossWalletBalance": float(usdt_balance.get("cross_wallet_balance", 0)),
+                        "crossUnPnl": float(usdt_balance.get("cross_un_pnl", 0)),
+                        "availableBalance": float(usdt_balance.get("available_balance", 0)),
+                        "maxWithdrawAmount": float(usdt_balance.get("max_withdraw_amount", 0)),
+                        "asset": "USDT"
+                    }
+                    logger.info(f"[get_account_balance] Success - 可用余额: {balance_info['availableBalance']:.2f} USDT")
+                    return balance_info
+                else:
+                    logger.warning("[get_account_balance] 未找到 USDT 资产")
+                    return {"error": "USDT asset not found", "msg": "未找到 USDT 资产"}
+            else:
+                logger.error(f"[get_account_balance] 返回格式异常: {type(result)}")
+                return {"error": "Invalid response format", "msg": "返回格式异常"}
+                
         except Exception as e:
-            logger.error(f"[get_account] Failed: {e}")
+            logger.error(f"[get_account_balance] Failed: {e}")
             return {"error": str(e), "msg": str(e)}
 
     async def get_positions(self, symbol: str = None) -> List[Dict[str, Any]]:
-        """获取持仓信息
+        """获取持仓信息（使用 position_information_v3 API）
         :param symbol: 交易对（可选）
         :return: 持仓列表
         """
-        params = dict()
+        params = {}
         if symbol:
             params["symbol"] = symbol
 
         logger.info(f"[get_positions] Request: {params}")
 
         try:
-            result = await self._run_sync(self._sdk.get_position_risk, **params)
+            response = await self._run_sync(self._sdk.rest_api.position_information_v3, **params)
+            result = _to_dict(response.data())
             if isinstance(result, list):
                 return result
             return []
@@ -163,8 +355,8 @@ class BinanceRestClient:
         """
         logger.info(f"[get_exchange_info] Request")
         try:
-            result = await self._run_sync(self._sdk.exchange_info)
-            return result
+            response = await self._run_sync(self._sdk.rest_api.exchange_information)
+            return _to_dict(response.data())
         except Exception as e:
             logger.error(f"[get_exchange_info] Failed: {e}")
             return {"error": str(e), "msg": str(e)}
@@ -189,15 +381,20 @@ class BinanceRestClient:
         """
         logger.info(f"[get_continuous_klines] pair={pair}, interval={interval}, limit={limit}")
 
-        params = dict(pair=pair, contractType=contractType, interval=interval, limit=limit)
+        params = {
+            "pair": pair,
+            "contract_type": contractType,
+            "interval": interval,
+            "limit": limit
+        }
         if startTime:
-            params["startTime"] = startTime
+            params["start_time"] = startTime
         if endTime:
-            params["endTime"] = endTime
+            params["end_time"] = endTime
 
         try:
-            result = await self._run_sync(self._sdk.continuous_klines, **params)
-            return result
+            response = await self._run_sync(self._sdk.rest_api.continuous_contract_kline_candlestick_data, **params)
+            return _to_dict(response.data())
         except Exception as e:
             logger.error(f"[get_continuous_klines] Failed: {e}")
             return []
@@ -213,7 +410,7 @@ class BinanceRestClient:
     ) -> List[List[Any]]:
         """获取现货K线数据
         :param symbol: 标的交易对，如BTCUSDT
-        :param contractType: 合约类型
+        :param contractType: 合约类型（此参数在现货K线中不使用）
         :param interval: 时间间隔，如1m, 5m, 15m, 30m, 1h, 4h, 1d
         :param startTime: 起始时间，毫秒时间戳
         :param endTime: 结束时间，毫秒时间戳
@@ -222,15 +419,19 @@ class BinanceRestClient:
         """
         logger.info(f"[get_spot_klines] symbol={symbol}, interval={interval}, limit={limit}")
 
-        params = dict(symbol=symbol, interval=interval, limit=limit)
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
+        }
         if startTime:
-            params["startTime"] = startTime
+            params["start_time"] = startTime
         if endTime:
-            params["endTime"] = endTime
+            params["end_time"] = endTime
 
         try:
-            result = await self._run_sync(self._sdk.klines, **params)
-            return result
+            response = await self._run_sync(self._sdk.rest_api.kline_candlestick_data, **params)
+            return _to_dict(response.data())
         except Exception as e:
             logger.error(f"[get_spot_klines] Failed: {e}")
             return []
@@ -286,7 +487,7 @@ if __name__ == "__main__":
             print("\n" + "=" * 60)
             print("测试4: 获取账户信息")
             print("=" * 60)
-            account = await client.get_account()
+            account = await client.get_account_balance()
             print(f"账户信息: {account}")
 
             print("\n" + "=" * 60)

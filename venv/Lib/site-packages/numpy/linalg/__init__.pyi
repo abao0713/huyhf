@@ -1,26 +1,70 @@
-from typing import Any, List
+from numpy._core.fromnumeric import matrix_transpose
+from numpy._core.numeric import tensordot, vecdot
 
-__all__: List[str]
+from ._linalg import (
+    matrix_power,
+    solve,
+    tensorsolve,
+    tensorinv,
+    inv,
+    cholesky,
+    outer,
+    eigvals,
+    eigvalsh,
+    pinv,
+    slogdet,
+    det,
+    svd,
+    svdvals,
+    eig,
+    eigh,
+    lstsq,
+    norm,
+    matrix_norm,
+    vector_norm,
+    qr,
+    cond,
+    matrix_rank,
+    multi_dot,
+    matmul,
+    trace,
+    diagonal,
+    cross,
+)
 
-class LinAlgError(Exception): ...
+__all__ = [
+    "matrix_power",
+    "solve",
+    "tensorsolve",
+    "tensorinv",
+    "inv",
+    "cholesky",
+    "eigvals",
+    "eigvalsh",
+    "pinv",
+    "slogdet",
+    "det",
+    "svd",
+    "svdvals",
+    "eig",
+    "eigh",
+    "lstsq",
+    "norm",
+    "qr",
+    "cond",
+    "matrix_rank",
+    "LinAlgError",
+    "multi_dot",
+    "trace",
+    "diagonal",
+    "cross",
+    "outer",
+    "tensordot",
+    "matmul",
+    "matrix_transpose",
+    "matrix_norm",
+    "vector_norm",
+    "vecdot",
+]
 
-def tensorsolve(a, b, axes=...): ...
-def solve(a, b): ...
-def tensorinv(a, ind=...): ...
-def inv(a): ...
-def matrix_power(a, n): ...
-def cholesky(a): ...
-def qr(a, mode=...): ...
-def eigvals(a): ...
-def eigvalsh(a, UPLO=...): ...
-def eig(a): ...
-def eigh(a, UPLO=...): ...
-def svd(a, full_matrices=..., compute_uv=..., hermitian=...): ...
-def cond(x, p=...): ...
-def matrix_rank(M, tol=..., hermitian=...): ...
-def pinv(a, rcond=..., hermitian=...): ...
-def slogdet(a): ...
-def det(a): ...
-def lstsq(a, b, rcond=...): ...
-def norm(x, ord=..., axis=..., keepdims=...): ...
-def multi_dot(arrays, *, out=...): ...
+class LinAlgError(ValueError): ...

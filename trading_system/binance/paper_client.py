@@ -43,9 +43,8 @@ class PaperTradingClient:
 
     async def initialize(self):
         try:
-            account = await self._get_kline_client().get_account()
-            balance_str = account.get("availableBalance", "0")
-            balance = float(balance_str)
+            account = await self._get_kline_client().get_account_balance()
+            balance = float(account.get("availableBalance", 0))
             if balance > 0:
                 self._balance = balance
                 self._initial_balance = balance
@@ -56,7 +55,17 @@ class PaperTradingClient:
         self._balance = 10000.0
         self._initial_balance = 10000.0
 
-    async def get_account(self) -> Dict[str, Any]:
+    async def get_account_balance(self) -> Dict[str, Any]:
+        """获取账户余额（与 BinanceRestClient 接口保持一致）
+        
+        返回字段说明：
+        - positionInitialMargin: 仓位占初始保证金
+        - openOrderInitialMargin: 挂单占初始保证金
+        - crossWalletBalance: 跨仓钱包余额
+        - crossUnPnl: 跨仓未实现盈亏
+        - availableBalance: 可用余额
+        - maxWithdrawAmount: 最大可提
+        """
         unrealized = 0.0
         for p in self._positions:
             qty = abs(float(p.get("positionAmt", 0)))
@@ -68,16 +77,36 @@ class PaperTradingClient:
             else:
                 unrealized += (entry - current) * qty
 
-        equity = self._balance + unrealized
+        # 计算仓位初始保证金（简化计算）
+        position_margin = 0.0
+        for p in self._positions:
+            qty = abs(float(p.get("positionAmt", 0)))
+            entry = float(p.get("entryPrice", 0))
+            position_margin += qty * entry * 0.05  # 假设 20x 杠杆
+
+        # 计算挂单初始保证金（纸交易客户端无挂单）
+        open_order_margin = 0.0
+
+        # 跨仓钱包余额
+        cross_wallet_balance = self._balance
+
+        # 跨仓未实现盈亏
+        cross_un_pnl = unrealized
+
+        # 可用余额
+        available_balance = self._balance
+
+        # 最大可提
+        max_withdraw_amount = self._balance
+
         return {
-            "availableBalance": f"{self._balance:.8f}",
-            "totalMarginBalance": f"{equity:.8f}",
-            "totalWalletBalance": f"{self._balance:.8f}",
-            "totalUnrealizedProfit": f"{unrealized:.8f}",
-            "totalCrossUnPnl": f"{unrealized:.8f}",
-            "totalInitialMargin": "0",
-            "totalMaintMargin": "0",
-            "balance": f"{self._balance:.8f}",
+            "positionInitialMargin": position_margin,
+            "openOrderInitialMargin": open_order_margin,
+            "crossWalletBalance": cross_wallet_balance,
+            "crossUnPnl": cross_un_pnl,
+            "availableBalance": available_balance,
+            "maxWithdrawAmount": max_withdraw_amount,
+            "asset": "USDT"
         }
 
     async def place_order(

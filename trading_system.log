@@ -13190,3 +13190,355 @@
 2026-06-12 22:38:48,070 - trading_system.strategies.chan_strategy - INFO - [ChanStrategy] 短期均线(SMA20): 2329.28
 2026-06-12 22:38:48,071 - trading_system.strategies.chan_strategy - INFO - [ChanStrategy] 中期均线(SMA60): 2327.80
 2026-06-12 22:38:48,072 - trading_system.strategies.chan_strategy - INFO - [ChanStrategy] 长期均线(SMA120): 2321.53
+2026-06-13 22:01:14,920 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:01:14,920 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:01:49,063 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:01:49,063 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:04:31,137 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:04:31,137 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:04:31,908 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(8)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:31,909 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(8)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:31,909 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(8)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:31,919 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(18)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:31,919 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(18)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:31,919 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(18)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:31,936 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(32)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:31,936 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(32)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:31,953 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(7)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:31,953 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(7)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:31,953 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(7)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:31,971 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(48)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:31,971 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(48)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,000 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(9)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:32,000 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(9)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,001 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(9)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,022 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(58)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,023 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(58)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,062 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(11)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:32,063 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(11)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,063 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(11)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,090 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(70)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,136 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:32,136 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,136 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,166 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(82)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,218 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(15)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:32,218 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(15)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,219 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(15)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,252 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(96)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,315 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(17)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:32,316 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(17)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,316 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(17)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,354 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(108)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,421 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(6)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:32,421 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(6)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,421 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(6)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,430 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(19)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:32,430 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(19)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,431 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(19)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,473 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(118)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,547 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(7)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:32,548 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(7)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,548 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(7)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,558 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(21)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,558 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(21)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,684 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(8)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:32,685 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(8)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,685 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(8)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,695 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(23)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,695 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(23)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,832 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(7)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:32,833 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(7)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,833 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(7)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:32,844 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(25)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:32,844 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(25)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:33,001 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(8)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:33,001 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(8)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:33,002 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(8)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:33,014 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(27)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:33,015 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(27)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:33,176 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(9)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:33,176 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(9)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:33,176 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(9)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:33,189 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(29)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:33,189 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(29)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:33,362 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(10)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:33,363 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(10)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:33,363 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(10)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:33,376 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(31)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:33,376 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(31)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:33,565 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(11)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:33,565 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(11)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:33,565 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(11)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:33,579 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(33)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:33,579 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(33)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:33,780 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(12)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:33,781 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(12)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:33,781 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(12)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:33,796 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(35)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:33,796 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(35)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:34,009 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:34,010 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:34,010 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:34,025 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(37)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:34,026 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(37)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:34,253 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(12)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:34,254 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(12)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:34,254 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(12)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:34,270 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(39)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:34,271 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(39)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:34,511 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:34,512 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:34,512 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:34,529 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(41)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:34,529 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(41)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:34,778 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(14)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:34,778 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(14)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:34,779 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(14)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:34,797 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(43)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:34,797 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(43)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:35,057 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:35,057 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:35,057 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(13)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:35,075 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(43)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:35,075 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(43)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:35,349 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(14)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:35,349 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(14)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:35,349 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(14)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:35,368 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(45)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:35,368 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(45)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:35,652 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(15)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:35,652 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(15)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:35,652 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(15)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:35,671 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(47)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:35,672 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(47)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:36,001 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(16)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:36,002 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(16)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:36,002 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(16)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:36,022 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(49)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:36,022 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(49)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:36,328 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(15)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:36,328 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(15)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:36,329 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(15)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:36,349 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(51)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:36,349 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(51)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:36,670 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(16)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:36,670 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(16)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:36,670 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(16)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:36,692 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(53)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:36,692 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(53)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:37,025 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(17)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:37,025 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(17)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:37,025 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(17)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:37,048 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(55)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:37,049 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(55)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:37,393 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(18)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:37,393 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(18)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:37,393 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(18)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:37,417 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(55)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:37,417 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(55)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:37,771 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(17)不足，无法计算短期均线(SMA20)
+2026-06-13 22:04:37,772 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(17)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:37,772 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(17)不足，无法计算长期均线(SMA120)
+2026-06-13 22:04:37,796 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(57)不足，无法计算中期均线(SMA60)
+2026-06-13 22:04:37,796 - trading_system.strategies.chan_strategy - WARNING - [ChanStrategy] 数据长度(57)不足，无法计算长期均线(SMA120)
+2026-06-13 22:45:17,557 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:45:17,557 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:46:13,586 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:46:13,586 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:46:13,625 - trading_system.binance.client - INFO - [get_exchange_info] Request
+2026-06-13 22:48:20,981 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:48:20,981 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:48:21,014 - trading_system.binance.client - INFO - [get_exchange_info] Request
+2026-06-13 22:48:22,587 - trading_system.binance.client - INFO - [get_continuous_klines] pair=BTCUSDT, interval=30m, limit=10
+2026-06-13 22:48:24,418 - trading_system.binance.client - ERROR - [get_account] Failed: (-2015, 'Invalid API-key, IP, or permissions for action')
+2026-06-13 22:48:24,419 - trading_system.binance.client - INFO - [get_positions] Request: {}
+2026-06-13 22:48:24,826 - trading_system.binance.client - ERROR - [get_positions] Failed: (-2015, 'Invalid API-key, IP, or permissions for action')
+2026-06-13 22:49:42,443 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:49:42,444 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 22:49:42,664 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-13 22:49:43,565 - trading_system.binance.client - ERROR - [get_account] Failed: (-2015, 'Invalid API-key, IP, or permissions for action')
+2026-06-13 22:49:43,897 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-13 22:49:52,116 - trading_system.binance.client - ERROR - [get_account] Failed: (-2015, 'Invalid API-key, IP, or permissions for action')
+2026-06-13 22:49:52,355 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-13 23:48:30,826 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 23:48:30,826 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 23:48:30,977 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-13 23:48:31,495 - trading_system.binance.client - ERROR - [get_account] Failed: (-2015, 'Invalid API-key, IP, or permissions for action')
+2026-06-13 23:48:31,744 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-13 23:48:37,666 - trading_system.binance.client - ERROR - [get_account] Failed: (-2015, 'Invalid API-key, IP, or permissions for action')
+2026-06-13 23:48:38,506 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-13 23:48:48,728 - trading_system.binance.client - ERROR - [get_account] Failed: (-2015, 'Invalid API-key, IP, or permissions for action')
+2026-06-13 23:48:48,966 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-13 23:49:04,189 - trading_system.binance.client - ERROR - [get_account] Failed: (-2015, 'Invalid API-key, IP, or permissions for action')
+2026-06-13 23:49:04,440 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-13 23:50:16,609 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 23:50:16,610 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-13 23:50:16,780 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-13 23:50:18,317 - trading_system.binance.client - ERROR - [get_account] Failed: (-2015, 'Invalid API-key, IP, or permissions for action')
+2026-06-13 23:50:18,587 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-13 23:50:31,476 - trading_system.binance.client - ERROR - [get_account] Failed: (-2015, 'Invalid API-key, IP, or permissions for action')
+2026-06-13 23:50:32,670 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 08:27:55,593 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 08:27:55,594 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 08:28:25,604 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 08:28:25,604 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 08:59:28,990 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 08:59:28,995 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 08:59:29,160 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 08:59:29,760 - trading_system.binance.client - ERROR - [get_account] Failed: (-1021, 'Timestamp for this request is outside of the recvWindow.')
+2026-06-14 08:59:30,637 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 08:59:43,601 - trading_system.binance.client - ERROR - [get_account] Failed: (-1021, 'Timestamp for this request is outside of the recvWindow.')
+2026-06-14 08:59:43,864 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:09:05,493 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:09:05,493 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:20:29,212 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:20:29,212 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:20:31,751 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:20:31,751 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:20:33,040 - trading_system.binance.client - INFO - 时间偏移已设置: 24542ms
+2026-06-14 09:20:33,040 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781400056996, 本地时间=1781400032454, 偏移量=24542ms
+2026-06-14 09:20:33,041 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 09:20:33,041 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 09:20:35,951 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:20:48,431 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:20:56,724 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:20:56,724 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:21:05,124 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:21:05,124 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:21:06,320 - trading_system.binance.client - INFO - 时间偏移已设置: 24489ms
+2026-06-14 09:21:06,320 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781400090270, 本地时间=1781400065781, 偏移量=24489ms
+2026-06-14 09:21:06,321 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 09:21:06,321 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 09:21:08,989 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:21:22,381 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:31:11,161 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:31:11,162 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:36:43,611 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:36:43,611 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:36:44,644 - trading_system.binance.client - INFO - 时间偏移已设置: 24508ms
+2026-06-14 09:36:44,644 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781401028734, 本地时间=1781401004226, 偏移量=24508ms
+2026-06-14 09:36:44,646 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 09:36:44,646 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 09:36:45,366 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:36:46,184 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:36:57,443 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:36:57,708 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:37:13,898 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:37:14,162 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:37:35,356 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:37:36,190 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:38:03,029 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:38:04,194 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:39:18,587 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:39:18,589 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:39:19,398 - trading_system.binance.client - INFO - 时间偏移已设置: 24504ms
+2026-06-14 09:39:19,398 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781401183690, 本地时间=1781401159186, 偏移量=24504ms
+2026-06-14 09:39:19,400 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 09:39:19,400 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 09:39:19,846 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:39:20,111 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:39:37,270 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:39:37,515 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:40:00,321 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:40:00,560 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:40:37,822 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:40:37,823 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:40:39,275 - trading_system.binance.client - INFO - 时间偏移已设置: 24802ms
+2026-06-14 09:40:39,278 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781401263436, 本地时间=1781401238634, 偏移量=24802ms
+2026-06-14 09:40:39,280 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 09:40:39,280 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 09:40:40,135 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:40:41,990 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:45:49,787 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:45:49,787 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:45:50,380 - trading_system.binance.client - INFO - 时间偏移已设置: 24513ms
+2026-06-14 09:45:50,380 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781401574666, 本地时间=1781401550153, 偏移量=24513ms
+2026-06-14 09:45:50,381 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 09:45:50,381 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 09:45:50,828 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:45:51,119 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:46:08,827 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:46:09,110 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:46:32,248 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:46:32,475 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:47:01,451 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:47:02,272 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:48:19,056 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:48:19,056 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:48:19,796 - trading_system.binance.client - INFO - 时间偏移已设置: 24578ms
+2026-06-14 09:48:19,796 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781401724100, 本地时间=1781401699522, 偏移量=24578ms
+2026-06-14 09:48:19,798 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 09:48:19,798 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 09:48:20,250 - trading_system.binance.client - INFO - [get_account_balance] Success
+2026-06-14 09:48:20,514 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:53:30,668 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:53:30,668 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:53:31,768 - trading_system.binance.client - INFO - 时间偏移已设置: 24563ms
+2026-06-14 09:53:31,768 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781402035856, 本地时间=1781402011293, 偏移量=24563ms
+2026-06-14 09:53:31,769 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 09:53:31,769 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 09:53:32,470 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:53:33,296 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:53:53,152 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:53:53,399 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:54:17,588 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:54:17,850 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:54:44,932 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:54:45,750 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:55:17,620 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:55:17,877 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:55:55,132 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:55:56,943 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:55:58,126 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:55:58,126 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:56:11,489 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:56:11,489 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:56:16,337 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:56:16,337 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:56:17,266 - trading_system.binance.client - INFO - 时间偏移已设置: 24531ms
+2026-06-14 09:56:17,266 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781402201394, 本地时间=1781402176863, 偏移量=24531ms
+2026-06-14 09:56:17,267 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 09:56:17,267 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 09:56:18,100 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:56:19,219 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:56:36,359 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:56:37,244 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:56:59,993 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:57:00,844 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:57:28,436 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:57:28,689 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:58:01,085 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:58:01,868 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:58:39,575 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:58:40,270 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:59:14,652 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:59:14,653 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 09:59:16,552 - trading_system.binance.client - INFO - 时间偏移已设置: 25174ms
+2026-06-14 09:59:16,560 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781402380851, 本地时间=1781402355677, 偏移量=25174ms
+2026-06-14 09:59:16,562 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 09:59:16,565 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 09:59:17,060 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 09:59:17,944 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 09:59:34,807 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 10:02:12,106 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 10:02:12,106 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 10:02:12,686 - trading_system.binance.client - INFO - 时间偏移已设置: 24539ms
+2026-06-14 10:02:12,686 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781402557011, 本地时间=1781402532472, 偏移量=24539ms
+2026-06-14 10:02:12,687 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 10:02:12,687 - trading_system.notify.dingtalk - INFO - [DingTalk] 通知器初始化完成，access_token: bd6b********************************************************d353
+2026-06-14 10:02:13,120 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 10:02:13,404 - trading_system.notify.dingtalk - INFO - [DingTalk] 消息发送成功
+2026-06-14 10:02:25,723 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 10:08:57,310 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 10:08:57,311 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 10:08:58,096 - trading_system.binance.client - INFO - 时间偏移已设置: 24467ms
+2026-06-14 10:08:58,096 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781402962188, 本地时间=1781402937721, 偏移量=24467ms
+2026-06-14 10:08:58,097 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 10:09:00,008 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 0.00 USDT
+2026-06-14 10:09:22,945 - trading_system - INFO - Creating database engine with connection pool, URL: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 10:09:22,946 - trading_system - INFO - Forcing database URL to: mysql+pymysql://root:305634841@localhost:3306/trading_db
+2026-06-14 10:09:24,326 - trading_system.binance.client - INFO - 时间偏移已设置: 24328ms
+2026-06-14 10:09:24,327 - trading_system.binance.client - INFO - 时间同步成功: 服务器时间=1781402987981, 本地时间=1781402963653, 偏移量=24328ms
+2026-06-14 10:09:24,328 - trading_system.binance.client - INFO - 已 patch binance_common.utils.get_timestamp
+2026-06-14 10:09:25,457 - trading_system.binance.client - INFO - [get_account_balance] Success - 可用余额: 5000.00 USDT

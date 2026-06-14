@@ -1,17 +1,28 @@
 import numpy as np
 import pytest
 
-import pandas.util._test_decorators as td
+from pandas.compat import is_platform_arm
 
 from pandas import (
     DataFrame,
     Series,
 )
 import pandas._testing as tm
+from pandas.util.version import Version
+
+pytestmark = [pytest.mark.single_cpu]
+
+numba = pytest.importorskip("numba")
+pytestmark.append(
+    pytest.mark.skipif(
+        Version(numba.__version__) == Version("0.61") and is_platform_arm(),
+        reason=f"Segfaults on ARM platforms with numba {numba.__version__}",
+    )
+)
 
 
-@td.skip_if_no("numba", "0.46.0")
-@pytest.mark.filterwarnings("ignore:\\nThe keyword argument")
+@pytest.mark.filterwarnings("ignore")
+# Filter warnings when parallel=True and the function can't be parallelized by Numba
 class TestEWM:
     def test_invalid_update(self):
         df = DataFrame({"a": range(5), "b": range(5)})
@@ -57,7 +68,7 @@ class TestEWM:
         times = Series(
             np.array(
                 ["2020-01-01", "2020-01-05", "2020-01-07", "2020-01-17", "2020-01-21"],
-                dtype="datetime64",
+                dtype="datetime64[ns]",
             )
         )
         expected = obj.ewm(
@@ -89,3 +100,13 @@ class TestEWM:
             tm.assert_equal(result, expected.tail(3))
 
             online_ewm.reset()
+
+    @pytest.mark.parametrize("method", ["aggregate", "std", "corr", "cov", "var"])
+    def test_ewm_notimplementederror_raises(self, method):
+        ser = Series(range(10))
+        kwargs = {}
+        if method == "aggregate":
+            kwargs["func"] = lambda x: x
+
+        with pytest.raises(NotImplementedError, match=".* is not implemented."):
+            getattr(ser.ewm(1).online(), method)(**kwargs)
