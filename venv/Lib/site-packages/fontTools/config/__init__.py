@@ -6,6 +6,7 @@ etc. If this file gets too big, split it into smaller files per-module.
 An instance of the Config class can be attached to a TTFont object, so that
 the various modules can access their configuration options from it.
 """
+
 from textwrap import dedent
 
 from fontTools.misc.configTools import *
@@ -54,6 +55,36 @@ Config.register_option(
         """
     ),
     default=None,
+    parse=Option.parse_optional_bool,
+    validate=Option.validate_optional_bool,
+)
+
+Config.register_option(
+    name="fontTools.otlLib.builder:WRITE_GPOS7",
+    help=dedent(
+        """\
+        macOS before 13.2 didn’t support GPOS LookupType 7 (non-chaining
+        ContextPos lookups), so FontTools.otlLib.builder disables a file size
+        optimisation that would use LookupType 7 instead of 8 when there is no
+        chaining (no prefix or suffix). Set to True to enable the optimization.
+        """
+    ),
+    default=False,
+    parse=Option.parse_optional_bool,
+    validate=Option.validate_optional_bool,
+)
+
+Config.register_option(
+    name="fontTools.ttLib:OPTIMIZE_FONT_SPEED",
+    help=dedent(
+        """\
+        Enable optimizations that prioritize speed over file size. This
+        mainly affects how glyf table and gvar / VARC tables are compiled.
+        The produced fonts will be larger, but rendering performance will
+        be improved with HarfBuzz and other text layout engines.
+        """
+    ),
+    default=False,
     parse=Option.parse_optional_bool,
     validate=Option.validate_optional_bool,
 )

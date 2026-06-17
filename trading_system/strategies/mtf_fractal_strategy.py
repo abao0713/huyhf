@@ -62,8 +62,8 @@ class StrategyMetadata:
     name: str = "Crypto_Chan_4H_Master_v1"
     version: str = "1.0"
     description: str = ""
-    base_currency: str = "USDC"
-    trading_pairs: List[str] = field(default_factory=lambda: ["BTC/USDC", "ETH/USDC"])
+    base_currency: str = "USDT"
+    trading_pairs: List[str] = field(default_factory=lambda: ["BTC/USDT", "ETH/USDT"])
     timeframe_config: TimeframeConfig = field(default_factory=TimeframeConfig)
 
     @classmethod
@@ -72,8 +72,8 @@ class StrategyMetadata:
             name=d.get("name", "Crypto_Chan_4H_Master_v1"),
             version=d.get("version", "1.0"),
             description=d.get("description", ""),
-            base_currency=d.get("base_currency", "USDC"),
-            trading_pairs=d.get("trading_pairs", ["BTC/USDC", "ETH/USDC"]),
+            base_currency=d.get("base_currency", "USDT"),
+            trading_pairs=d.get("trading_pairs", ["BTC/USDT", "ETH/USDT"]),
             timeframe_config=TimeframeConfig.from_dict(d.get("timeframe_config", {})),
         )
 
@@ -376,6 +376,11 @@ class HedgingState:
     short_stop_loss: float = 0.0
     long_take_profit: float = 0.0
     short_take_profit: float = 0.0
+    # TP1 部分止盈
+    long_tp1: float = 0.0
+    short_tp1: float = 0.0
+    long_tp1_hit: bool = False
+    short_tp1_hit: bool = False
     regime: MarketRegime = MarketRegime.UNKNOWN
 
     @property
@@ -423,7 +428,7 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
     def __init__(self, config: StrategyConfigRoot):
         super().__init__(config.metadata.name)
         self.config = config
-        self.symbol = config.metadata.trading_pairs[0] if config.metadata.trading_pairs else "ETH/USDC"
+        self.symbol = config.metadata.trading_pairs[0] if config.metadata.trading_pairs else "ETH/USDT"
 
         # 多周期数据容器
         self.df_4h: pd.DataFrame = pd.DataFrame()
@@ -445,9 +450,10 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         self._chan_15m = ChanAnalysisResult()
 
         # 缠论引擎实例 (复用 ChanStrategy)
-        self._chan_engine_4h = ChanStrategy(symbol="ETHUSDC", time_frame="4h", use_binance_client=False)
-        self._chan_engine_1h = ChanStrategy(symbol="ETHUSDC", time_frame="1h", use_binance_client=False)
-        self._chan_engine_15m = ChanStrategy(symbol="ETHUSDC", time_frame="15m", use_binance_client=False)
+        symbol_clean = self.symbol.replace("/", "")
+        self._chan_engine_4h = ChanStrategy(symbol=symbol_clean, time_frame="4h", use_binance_client=False)
+        self._chan_engine_1h = ChanStrategy(symbol=symbol_clean, time_frame="1h", use_binance_client=False)
+        self._chan_engine_15m = ChanStrategy(symbol=symbol_clean, time_frame="15m", use_binance_client=False)
         self._chan_analyzer = ChanTheoryFirstBuyAnalyzer()
 
         # 持仓和对冲状态
@@ -580,6 +586,25 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
             return 0.0
         val = float(src.iloc[-1])
         return val if not pd.isna(val) else 0.0
+    
+    def _calculate_stop_loss(self, price: float, atr_val: float, sl_mult: float, side: str = "long") -> float:
+        """计算止损价，确保与入场价有最小距离"""
+        min_distance = max(0.01, atr_val * 0.1)  # 最小距离至少0.01或ATR的10%
+        
+        if side == "long":
+            stop_loss = round(price - atr_val * sl_mult, 4)
+            # 确保止损价低于入场价且有最小距离
+            min_stop = price - min_distance
+            if stop_loss >= price or stop_loss >= min_stop:
+                stop_loss = round(min_stop, 4)
+        else:
+            stop_loss = round(price + atr_val * sl_mult, 4)
+            # 确保止损价高于入场价且有最小距离
+            max_stop = price + min_distance
+            if stop_loss <= price or stop_loss <= max_stop:
+                stop_loss = round(max_stop, 4)
+        
+        return stop_loss
 
     def _update_daily_trend(self) -> None:
         """更新日线趋势判断（每日 0:00 UTC+8 刷新）"""
@@ -774,7 +799,7 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         atr_val = self.get_current_atr("4h")
         sl_mult = self.config.indicators.atr.multiplier_stop_loss
         tp_mult = self.config.indicators.atr.multiplier_take_profit
-        stop_loss = round(current_price - atr_val * sl_mult, 4)
+        stop_loss = self._calculate_stop_loss(current_price, atr_val, sl_mult, side="long")
         take_profit = round(current_price + atr_val * tp_mult, 4)
         size = self._calculate_position_size(current_price, stop_loss)
         logger.info(f"[{self.name}] 二买信号触发: price={current_price:.4f}, "
@@ -820,7 +845,7 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         atr_val = self.get_current_atr("4h")
         sl_mult = self.config.indicators.atr.multiplier_stop_loss
         tp_mult = self.config.indicators.atr.multiplier_take_profit
-        stop_loss = round(current_price - atr_val * sl_mult, 4)
+        stop_loss = self._calculate_stop_loss(current_price, atr_val, sl_mult, side="long")
         take_profit = round(current_price + atr_val * tp_mult, 4)
         size = self._calculate_position_size(current_price, stop_loss)
         logger.info(f"[{self.name}] 类二买信号触发: price={current_price:.4f}, stop={stop_loss:.4f}")
@@ -864,7 +889,7 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         atr_val = self.get_current_atr("4h")
         sl_mult = self.config.indicators.atr.multiplier_stop_loss
         tp_mult = self.config.indicators.atr.multiplier_take_profit
-        stop_loss = round(current_price + atr_val * sl_mult, 4)
+        stop_loss = self._calculate_stop_loss(current_price, atr_val, sl_mult, side="short")
         take_profit = round(current_price - atr_val * tp_mult, 4)
         size = self._calculate_position_size(current_price, stop_loss)
         logger.info(f"[{self.name}] 二卖信号触发: price={current_price:.4f}, stop={stop_loss:.4f}")
@@ -1256,6 +1281,12 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
             self.hedging.long_entry_price = price
             self.hedging.long_stop_loss = signal.get("stop_loss", 0)
             self.hedging.long_take_profit = signal.get("take_profit", 0)
+            # TP1 = 入场价 + (TP - 入场价) * 0.5
+            if self.hedging.long_take_profit > 0 and price > 0:
+                self.hedging.long_tp1 = round(price + (self.hedging.long_take_profit - price) * 0.5, 4)
+            else:
+                self.hedging.long_tp1 = 0
+            self.hedging.long_tp1_hit = False
             self._market_regime = MarketRegime.TRENDING_UP
             self.trades.append(TradeRecordV2(
                 timestamp=pd.Timestamp.now(), action="OPEN_LONG",
@@ -1265,6 +1296,12 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
             self.hedging.short_entry_price = price
             self.hedging.short_stop_loss = signal.get("stop_loss", 0)
             self.hedging.short_take_profit = signal.get("take_profit", 0)
+            # TP1 = 入场价 - (入场价 - TP) * 0.5
+            if self.hedging.short_take_profit > 0 and price > 0:
+                self.hedging.short_tp1 = round(price - (price - self.hedging.short_take_profit) * 0.5, 4)
+            else:
+                self.hedging.short_tp1 = 0
+            self.hedging.short_tp1_hit = False
             self._market_regime = MarketRegime.TRENDING_DOWN
             self.trades.append(TradeRecordV2(
                 timestamp=pd.Timestamp.now(), action="OPEN_SHORT",
@@ -1277,6 +1314,8 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
             self.hedging.long_entry_price = 0
             self.hedging.long_stop_loss = 0
             self.hedging.long_take_profit = 0
+            self.hedging.long_tp1 = 0
+            self.hedging.long_tp1_hit = False
         elif action == "CLOSE_SHORT":
             if self.hedging.short_qty > 0:
                 pnl = (self.hedging.short_entry_price - price) * self.hedging.short_qty
@@ -1285,15 +1324,19 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
             self.hedging.short_entry_price = 0
             self.hedging.short_stop_loss = 0
             self.hedging.short_take_profit = 0
+            self.hedging.short_tp1 = 0
+            self.hedging.short_tp1_hit = False
         elif action == "CLOSE_SHORT_AND_OPEN_LONG":
             if self.hedging.short_qty > 0:
                 pnl = (self.hedging.short_entry_price - price) * self.hedging.short_qty
                 self.hedging.short_qty = 0
             atr = self.get_current_atr("4h")
-            self.hedging.long_qty += self._calculate_position_size(price, price - atr * 1.5)
+            self.hedging.long_qty += self._calculate_position_size(price, self._calculate_stop_loss(price, atr, 1.5, side="long"))
             self.hedging.long_entry_price = price
-            self.hedging.long_stop_loss = round(price - atr * 1.5, 4)
+            self.hedging.long_stop_loss = self._calculate_stop_loss(price, atr, 1.5, side="long")
             self.hedging.long_take_profit = round(price + atr * 3.0, 4)
+            self.hedging.long_tp1 = round(price + atr * 1.5, 4)  # TP1 = 入场价 + 1.5 ATR
+            self.hedging.long_tp1_hit = False
             self._market_regime = MarketRegime.TRENDING_UP
         elif action == "OPEN_SHORT_HEDGE":
             self.hedging.short_qty += size
@@ -1897,7 +1940,7 @@ def run_crypto_chan_backtest(
             if fp.exists():
                 dfs[tf] = pd.read_csv(fp)
                 if "open_time" in dfs[tf].columns:
-                    dfs[tf]["open_time"] = pd.to_datetime(dfs[tf]["open_time"])
+                    dfs[tf]["open_time"] = pd.to_datetime(dfs[tf]["open_time"], unit="ms")
                 logger.info(f"[Backtest] 加载 {tf}: {len(dfs[tf])} 行 from {fp}")
         if start_date and end_date:
             for tf in dfs:

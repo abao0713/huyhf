@@ -2,13 +2,54 @@ import asyncio
 import logging
 import sys
 import time
+import ssl
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+from functools import wraps
 
 # 添加项目根目录到 Python 路径
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# 重试装饰器
+def retry_on_network_error(max_retries: int = 3, delay: float = 2.0, backoff: float = 2.0):
+    """
+    网络请求重试装饰器
+    
+    :param max_retries: 最大重试次数
+    :param delay: 初始延迟（秒）
+    :param backoff: 延迟倍增系数
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            current_delay = delay
+            
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    error_str = str(e)
+                    # 判断是否是网络相关错误
+                    if any(err in error_str for err in ['ProxyError', 'TimeoutError', 'SSLError', 
+                                                        'ConnectionError', 'Max retries', 'handshake']):
+                        logger.warning(f"[retry] 网络请求失败 (尝试 {attempt + 1}/{max_retries}): {error_str}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(current_delay)
+                            current_delay *= backoff
+                            continue
+                    # 非网络错误直接抛出
+                    raise
+            
+            # 所有重试都失败
+            logger.error(f"[retry] 网络请求最终失败 ({max_retries} 次尝试): {last_exception}")
+            raise last_exception
+        
+        return wrapper
+    return decorator
 
 from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
     DerivativesTradingUsdsFutures,
@@ -74,7 +115,13 @@ class BinanceRestClient:
         self.api_key = api_key or binance_config.api_key
         self.secret_key = secret_key or binance_config.secret_key
         self.is_simulated = is_simulated or binance_config.is_simulated
-
+        
+        # 精度缓存
+        self._symbol_precision_cache = {}
+        
+        # 持仓模式（对冲模式/单边模式）- None表示未检测
+        self._is_hedge_mode = None
+        
         # 选择正确的 base_url
         base_url = DERIVATIVES_TRADING_USDS_FUTURES_REST_API_TESTNET_URL if self.is_simulated else DERIVATIVES_TRADING_USDS_FUTURES_REST_API_PROD_URL
 
@@ -132,39 +179,55 @@ class BinanceRestClient:
         self,
         symbol: str,
         side: str,
-        position_side: str,
-        order_type: str,
-        quantity: float,
+        position_side: str = None,  # 改为可选参数
+        order_type: str = "MARKET",
+        quantity: float = 0.0,
         price: float = None,
         time_in_force: str = "GTC"
     ) -> Dict[str, Any]:
         """下单
         :param symbol: 交易对，如 "BTCUSDT"
         :param side: 买入或卖出 "BUY" / "SELL"
-        :param position_side: 持仓方向 "LONG" / "SHORT"
+        :param position_side: 持仓方向 "LONG" / "SHORT"（对冲模式必需，单边模式不传）
         :param order_type: 订单类型 "LIMIT" / "MARKET"
         :param quantity: 数量
         :param price: 价格（限价单必需）
         :param time_in_force: 有效期限 "GTC" / "IOC" / "FOK"
         :return: 下单结果
         """
+        # 如果精度缓存为空，先获取交易所信息
+        if not self._symbol_precision_cache:
+            await self.get_exchange_info()
+        
+        # 如果还没检测过持仓模式，自动检测
+        if self._is_hedge_mode is None:
+            await self.detect_hedge_mode()
+        
+        # 格式化精度
+        quantity = self._format_quantity(symbol, quantity)
+        if price is not None:
+            price = self._format_price(symbol, price)
+        
         # 转换字符串参数为枚举
         side_enum = NewOrderSideEnum(side)
-        position_side_enum = NewOrderPositionSideEnum(position_side)
         
         params = {
             "symbol": symbol,
             "side": side_enum,
             "type": order_type,
             "quantity": quantity,
-            "position_side": position_side_enum,
         }
+        
+        # 只有对冲模式才需要 position_side
+        if position_side is not None and self._is_hedge_mode:
+            position_side_enum = NewOrderPositionSideEnum(position_side)
+            params["position_side"] = position_side_enum
         
         if order_type == "LIMIT":
             params["price"] = price
             params["time_in_force"] = NewOrderTimeInForceEnum(time_in_force)
 
-        logger.info(f"[place_order] Request: symbol={symbol}, side={side}, type={order_type}, quantity={quantity}, price={price}")
+        logger.info(f"[place_order] Request: symbol={symbol}, side={side}, type={order_type}, quantity={quantity}, price={price}, position_side={position_side}")
 
         try:
             response = await self._run_sync(self._sdk.rest_api.new_order, **params)
@@ -356,11 +419,82 @@ class BinanceRestClient:
         logger.info(f"[get_exchange_info] Request")
         try:
             response = await self._run_sync(self._sdk.rest_api.exchange_information)
-            return _to_dict(response.data())
+            result = _to_dict(response.data())
+            # 缓存精度信息
+            self._cache_precision(result)
+            return result
         except Exception as e:
             logger.error(f"[get_exchange_info] Failed: {e}")
             return {"error": str(e), "msg": str(e)}
+    
+    async def detect_hedge_mode(self) -> bool:
+        """检测账户是否为对冲模式
+        :return: True-对冲模式，False-单边模式
+        """
+        try:
+            response = await self._run_sync(self._sdk.rest_api.get_position_mode)
+            data = _to_dict(response.data())
+            self._is_hedge_mode = data.get("dualSidePosition", False)
+            logger.info(f"[detect_hedge_mode] Detected: {self._is_hedge_mode}")
+            return self._is_hedge_mode
+        except Exception as e:
+            logger.error(f"[detect_hedge_mode] Failed: {e}")
+            # 默认使用单边模式
+            self._is_hedge_mode = False
+            return False
+    
+    def _cache_precision(self, exchange_info: Dict):
+        """缓存交易对精度信息"""
+        try:
+            symbols = exchange_info.get("symbols", [])
+            for symbol_info in symbols:
+                symbol = symbol_info.get("symbol")
+                if not symbol:
+                    continue
+                
+                price_precision = 0
+                quantity_precision = 0
+                
+                filters = symbol_info.get("filters", [])
+                for f in filters:
+                    filter_type = f.get("filterType")
+                    if filter_type == "PRICE_FILTER":
+                        tick_size = f.get("tickSize", "0.0001")
+                        price_precision = max(0, len(str(tick_size).split(".")[1]) if "." in tick_size else 0)
+                    elif filter_type == "LOT_SIZE":
+                        step_size = f.get("stepSize", "0.001")
+                        quantity_precision = max(0, len(str(step_size).split(".")[1]) if "." in step_size else 0)
+                
+                self._symbol_precision_cache[symbol] = {
+                    "price_precision": price_precision,
+                    "quantity_precision": quantity_precision
+                }
+        except Exception as e:
+            logger.error(f"[cache_precision] Failed: {e}")
+    
+    def _get_precision(self, symbol: str) -> Dict[str, int]:
+        """获取交易对精度
+        :param symbol: 交易对
+        :return: {"price_precision": int, "quantity_precision": int}
+        """
+        # 先检查缓存
+        if symbol in self._symbol_precision_cache:
+            return self._symbol_precision_cache[symbol]
+        
+        # 默认精度
+        return {"price_precision": 2, "quantity_precision": 4}
+    
+    def _format_price(self, symbol: str, price: float) -> float:
+        """格式化价格到正确精度"""
+        precision = self._get_precision(symbol)["price_precision"]
+        return round(price, precision)
+    
+    def _format_quantity(self, symbol: str, quantity: float) -> float:
+        """格式化数量到正确精度"""
+        precision = self._get_precision(symbol)["quantity_precision"]
+        return round(quantity, precision)
 
+    @retry_on_network_error(max_retries=3, delay=3.0)
     async def get_continuous_klines(
         self,
         pair: str,
@@ -379,7 +513,7 @@ class BinanceRestClient:
         :param limit: 返回数据量，默认500，最大1500
         :return: K线数据列表
         """
-        logger.info(f"[get_continuous_klines] pair={pair}, interval={interval}, limit={limit}")
+        logger.debug(f"[get_continuous_klines] pair={pair}, interval={interval}, limit={limit}")
 
         params = {
             "pair": pair,

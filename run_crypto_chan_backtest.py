@@ -31,17 +31,18 @@ from trading_system.strategies.mtf_fractal_strategy import (
     generate_backtest_report,
     CCXTDataProvider,
 )
-from trading_system.strategies.visualization import plot_backtest_from_report, ChanBacktestVisualizer
+from trading_system.strategies.chan_backtest_chart import ChanBacktestChart
 
 logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 # 静默缠论和策略模块的INFO日志，大幅减少IO开销
+# chan_strategy 的 "数据长度不足" 属于正常情况，设为 ERROR 级别完全静默
 for _mod in ["trading_system.strategies.chan_strategy",
              "trading_system.strategies.mtf_fractal_strategy",
              "trading_system.strategies.chan_first_buy_strategy"]:
-    logging.getLogger(_mod).setLevel(logging.WARNING)
+    logging.getLogger(_mod).setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATA_DIR = PROJECT_ROOT / "trading_system" / "data" / "binance_history"
@@ -55,7 +56,7 @@ def build_config(symbol: str) -> StrategyConfigRoot:
             "name": "Crypto_Chan_4H_Master_v1",
             "version": "1.0",
             "description": "基于缠论4H/1H/15M级别的交易系统，支持双向持仓与动态对冲。",
-            "base_currency": "USDC",
+            "base_currency": "USDT",
             "trading_pairs": [symbol],
             "timeframe_config": {
                 "trend_level": "4h",
@@ -193,7 +194,7 @@ def load_csv_data(symbol: str, data_dir: Path, start_date: Optional[str] = None,
         if fp.exists():
             df = pd.read_csv(fp)
             if "open_time" in df.columns:
-                df["open_time"] = pd.to_datetime(df["open_time"])
+                df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
             dfs[tf] = df
             logger.info(f"加载 {tf}: {len(df)} 行 from {fp}")
         else:
@@ -349,18 +350,105 @@ def main():
             plot_output = plot_dir / f"{args.symbol.replace('/', '')}_backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         
         try:
-            plot_backtest_from_report(
-                report=report,
-                df_4h=df_4h,
+            # 从回测引擎提取缠论分析数据
+            chan_4h = engine.strategy._chan_4h
+            macd_4h = engine.strategy._macd_4h
 
+            # 从 trade_history 提取买卖点信号
+            buy_sell_points = []
+            for trade in report.trade_history:
+                action = trade.get('action', '')
+                price = trade.get('price', 0)
+                timestamp = trade.get('timestamp')
+                if not price or not timestamp:
+                    continue
 
-                zhongshu_list=engine.strategy._chan_4h.zhongshu_list,
-                macd_data=engine.strategy._macd_4h,
-                atr_data=engine.strategy._atr_4h,
-                funding_rate=[],  # 如有资金费率数据可传入
-                save_path=Path(plot_output),
-                show=not args.no_show
+                # 根据 action 映射信号类型
+                signal_type = None
+                if 'OPEN_LONG' in action or action == 'BUY':
+                    reason = trade.get('reason', '')
+                    if 'type_2b' in reason or '2B' in reason:
+                        signal_type = '2B'
+                    elif 'type_2' in reason or '二买' in reason:
+                        signal_type = '2B'
+                    else:
+                        signal_type = '1B'
+                elif 'OPEN_SHORT' in action or action == 'SELL':
+                    reason = trade.get('reason', '')
+                    if 'type_2' in reason or '二卖' in reason:
+                        signal_type = '2S'
+                    else:
+                        signal_type = '1S'
+                else:
+                    continue
+
+                # 找到对应 K 线索引
+                if isinstance(timestamp, str):
+                    ts = pd.Timestamp(timestamp)
+                else:
+                    ts = timestamp
+
+                idx = None
+                for i, row in df_4h.reset_index(drop=True).iterrows():
+                    if 'open_time' in row:
+                        ot = row['open_time']
+                        if isinstance(ot, str):
+                            ot = pd.Timestamp(ot)
+                        if ot >= ts:
+                            idx = i
+                            break
+
+                if idx is not None:
+                    buy_sell_points.append({
+                        'type': signal_type,
+                        'idx': idx,
+                        'price': price,
+                    })
+
+            # 构建背驰连线数据
+            divergence_lines = []
+            beichi_pens = []
+            chan_pens = getattr(chan_4h, 'pens', [])
+            for pen in chan_pens:
+                if hasattr(pen, 'macd_area') and pen.macd_area:
+                    beichi_pens.append(pen)
+            if len(beichi_pens) >= 2:
+                for j in range(1, len(beichi_pens)):
+                    p0 = beichi_pens[j - 1]
+                    p1 = beichi_pens[j]
+                    if p0.direction == p1.direction:
+                        macd_ratio = 0.0
+                        if p0.macd_area != 0:
+                            macd_ratio = abs(p1.macd_area / p0.macd_area)
+                        if macd_ratio < 0.85 and macd_ratio > 0:
+                            div_type = 'bull' if p1.direction == 'down' else 'bear'
+                            try:
+                                divergence_lines.append({
+                                    'type': div_type,
+                                    'price_idx1': p0.end_fractal.idx,
+                                    'price_idx2': p1.end_fractal.idx,
+                                    'macd_idx1': p0.end_fractal.idx,
+                                    'macd_idx2': p1.end_fractal.idx,
+                                })
+                            except Exception:
+                                pass
+
+            # 生成图表
+            chart = ChanBacktestChart(
+                df=df_4h,
+                fractals=getattr(chan_4h, 'fractals', []),
+                pens=chan_pens,
+                segments=getattr(chan_4h, 'segments', []),
+                zhongshu_list=getattr(chan_4h, 'zhongshu_list', []),
+                buy_sell_points=buy_sell_points,
+                macd_data=macd_4h if macd_4h else {},
+                divergence_lines=divergence_lines,
+                title=f"缠论回测分析 - {args.symbol}",
             )
+            chart.plot()
+            saved_path = chart.save(str(plot_output), dpi=150)
+            print(f"图表已保存: {saved_path}")
+
         except Exception as e:
             logger.error(f"生成图表失败: {e}")
             import traceback

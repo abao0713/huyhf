@@ -120,18 +120,11 @@ def daemon_is_running() -> bool:
     if pid is None:
         return False
     try:
-        # Windows上使用tasklist检查进程
-        import subprocess
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}"],
-            capture_output=True, text=True, encoding='utf-8', errors='ignore'
-        )
-        lines = result.stdout.split('\n')
-        # 检查输出中是否有该PID（排除标题行和空行）
-        for line in lines:
-            line = line.strip()
-            if line and str(pid) in line and 'PID' not in line:
-                return True
+        import os
+        # 跨平台方式检查进程是否存在
+        os.kill(pid, 0)
+        return True
+    except OSError:
         return False
     except Exception as e:
         _logger.warning(f"检查进程状态失败: {e}")
@@ -148,21 +141,30 @@ def daemon_start(script_path: str, args: List[str]) -> bool:
     try:
         import subprocess
         import threading
+        import os
         
-        # 直接使用 Popen 启动，设置创建新进程组
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
+        # 跨平台启动进程
+        kwargs = {
+            'args': [sys.executable, script_path] + args,
+            'stdout': subprocess.DEVNULL,
+            'stderr': subprocess.DEVNULL,
+            'cwd': str(PROJECT_ROOT),
+        }
+        
+        # Windows 特有设置
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            kwargs['startupinfo'] = startupinfo
+            if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP'):
+                kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            # Linux/Mac 设置
+            kwargs['preexec_fn'] = os.setsid
         
         # 启动进程
-        process = subprocess.Popen(
-            [sys.executable, script_path] + args,
-            startupinfo=startupinfo,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            cwd=str(PROJECT_ROOT),
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP') else 0
-        )
+        process = subprocess.Popen(**kwargs)
         
         # 等待进程启动
         time.sleep(2)
@@ -193,9 +195,16 @@ def daemon_stop() -> bool:
     
     try:
         import subprocess
-        # Windows上使用taskkill终止进程
-        subprocess.run(["taskkill", "/F", "/PID", str(pid)], 
-                      capture_output=True)
+        # 跨平台终止进程
+        if os.name == 'nt':
+            # Windows: 使用 taskkill
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                          capture_output=True)
+        else:
+            # Linux/Mac: 使用 os.kill
+            import signal
+            os.kill(pid, signal.SIGTERM)
+        
         time.sleep(1)
         
         if not daemon_is_running():
@@ -261,7 +270,7 @@ def build_config(symbol: str) -> StrategyConfigRoot:
             "name": "Crypto_Chan_4H_Master_v1",
             "version": "1.0",
             "description": "基于缠论4H/1H/15M级别的交易系统，支持双向持仓与动态对冲。",
-            "base_currency": "USDC",
+            "base_currency": "USDT",
             "trading_pairs": [symbol],
             "timeframe_config": {
                 "trend_level": "4h",
@@ -359,7 +368,7 @@ def load_csv_data(symbol: str, data_dir: Path, start_date: Optional[str] = None,
         if fp.exists():
             df = pd.read_csv(fp)
             if "open_time" in df.columns:
-                df["open_time"] = pd.to_datetime(df["open_time"])
+                df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
             dfs[tf] = df
             _logger.info(f"加载 {tf}: {len(df)} 行 from {fp}")
         else:
@@ -404,7 +413,7 @@ class CryptoChanLiveExecutor:
         self.config = config
         self.initial_capital = initial_capital
         self.commission = commission
-        self.symbol = config.metadata.trading_pairs[0] if config.metadata.trading_pairs else "ETH/USDC"
+        self.symbol = config.metadata.trading_pairs[0] if config.metadata.trading_pairs else "ETH/USDT"
         self.use_realtime = use_realtime
 
         # 策略实例
@@ -461,8 +470,11 @@ class CryptoChanLiveExecutor:
             self._balance = balance_result.get("availableBalance", self.initial_capital)
             self.strategy.current_capital = self._balance
             
+            # 更新初始资金为实时余额
+            self.initial_capital = self._balance
+            
             # 记录完整的余额信息
-            _logger.info(f"[Live] 账户余额信息:")
+            _logger.info(f"[Live] 账户余额信息（已设置为初始资金）:")
             _logger.info(f"  - 可用余额: ${balance_result.get('availableBalance', 0):,.2f}")
             _logger.info(f"  - 跨仓钱包余额: ${balance_result.get('crossWalletBalance', 0):,.2f}")
             _logger.info(f"  - 跨仓未实现盈亏: ${balance_result.get('crossUnPnl', 0):,.2f}")
@@ -710,7 +722,7 @@ class CryptoChanLiveExecutor:
 
         if df_4h.empty:
             _logger.error("4H数据为空")
-            return {"error": "4H数据为空"}
+            return {"error": "4H数据为空", "completed": True}
 
         total_bars = len(df_4h)
         _logger.info(f"[Paper] 开始模拟盘执行: {total_bars} 根4H K线")
@@ -719,9 +731,13 @@ class CryptoChanLiveExecutor:
         # 确定起始位置（跳过已初始化的数据，从最新bar开始）
         start_idx = max(0, self._bar_index)
         if start_idx >= total_bars:
-            _logger.info("[Paper] 已到达数据末尾")
-            self._running = False
-            return await self._generate_report()
+            _logger.info("[Paper] 已到达数据末尾，直接进入实时监控模式")
+            # 不设置 self._running = False，继续进入实时监控模式
+            # 跳过历史数据处理，直接进入实时监控
+            pass
+        else:
+            # 正常处理历史数据
+            pass
 
         import numpy as np
 
@@ -888,9 +904,181 @@ class CryptoChanLiveExecutor:
             if poll_interval > 0 and i < total_bars - 1:
                 await asyncio.sleep(poll_interval)
 
+        # 历史数据处理完成，进入实时监控模式
+        _logger.info("=" * 60)
+        _logger.info("历史数据处理完成，进入实时监控模式")
+        _logger.info("=" * 60)
+        
+        # 重新设置 _running 为 True，确保进入实时监控循环
+        self._running = True
+        
+        # 获取最后一根K线的open_time作为基准
+        last_bar_time = df_4h.iloc[-1]["open_time"]
+        if hasattr(last_bar_time, "timestamp"):
+            last_bar_timestamp = int(last_bar_time.timestamp() * 1000)
+        else:
+            last_bar_timestamp = int(last_bar_time)
+        
+        _logger.info(f"[实时] 最后一根K线时间: {last_bar_time}")
+        _logger.info(f"[实时] 开始监控新的4H K线...")
+        
+        # 实时监控循环
+        realtime_bar_count = 0
+        last_wait_log_time = 0  # 上次打印等待日志的时间
+        while self._running:
+            try:
+                # 等待轮询间隔
+                await asyncio.sleep(poll_interval)
+                
+                # 获取最新的K线数据
+                symbol_clean = self.symbol.replace("/", "")
+                latest_klines = await self.client.get_continuous_klines(
+                    pair=symbol_clean,
+                    contractType="PERPETUAL",
+                    interval="4h",
+                    limit=10  # 获取最近10根K线
+                )
+                
+                if not latest_klines or len(latest_klines) == 0:
+                    _logger.warning("[实时] 获取K线数据失败，继续等待...")
+                    continue
+                
+                # 解析最新K线
+                latest_kline = latest_klines[-1]
+                latest_open_time = latest_kline[0]  # 第一列是open_time
+                
+                # 检查是否有新K线
+                if latest_open_time > last_bar_timestamp:
+                    realtime_bar_count += 1
+                    _logger.info(f"[实时] 检测到新的4H K线 #{realtime_bar_count}")
+                    _logger.info(f"[实时] 新K线时间: {pd.to_datetime(latest_open_time, unit='ms')}")
+                    
+                    # 更新最后一根K线的时间戳
+                    last_bar_timestamp = latest_open_time
+                    
+                    # 将新K线数据转换为DataFrame格式
+                    new_bar_data = {
+                        "open_time": pd.to_datetime(latest_open_time, unit='ms'),
+                        "open": float(latest_kline[1]),
+                        "high": float(latest_kline[2]),
+                        "low": float(latest_kline[3]),
+                        "close": float(latest_kline[4]),
+                        "volume": float(latest_kline[5]),
+                    }
+                    
+                    # 追加到DataFrame
+                    new_row = pd.DataFrame([new_bar_data])
+                    df_4h = pd.concat([df_4h, new_row], ignore_index=True)
+                    total_bars = len(df_4h)
+                    
+                    # 获取当前价格
+                    current_price = new_bar_data["close"]
+                    
+                    # 更新客户端的当前价格
+                    if not self.use_realtime:
+                        self.client._current_price[self.symbol.replace("/", "")] = current_price
+                    
+                    # 注入实时时间
+                    self.strategy._sim_time = new_bar_data["open_time"].to_pydatetime()
+                    
+                    # 注入数据到策略
+                    self.strategy.inject_data_incremental(
+                        df_4h, None, None, None,
+                        update_1h=False, update_15m=False,
+                    )
+                    
+                    # 检查止损/止盈
+                    close_orders = self._check_close_conditions(current_price)
+                    if close_orders:
+                        await self._execute_orders(close_orders)
+                    
+                    # 同步策略持仓与客户端持仓
+                    self._sync_strategy_to_client()
+                    
+                    # 生成信号
+                    signal = self.strategy.generate_signal(bar_idx=total_bars - 1)
+                    if signal:
+                        _logger.info(f"[实时] 信号: {signal.get('action')} @ {signal.get('price', 0):.2f}")
+                        
+                        # 发送信号钉钉通知
+                        self._send_dingtalk_signal(signal)
+                        
+                        trades_before = len(self.strategy.trades)
+                        self.strategy.apply_signal(signal)
+                        trades_after = len(self.strategy.trades)
+                        
+                        if trades_after > trades_before:
+                            # 执行新增的交易记录
+                            new_trades = self.strategy.trades[trades_before:]
+                            for trade in new_trades:
+                                symbol_clean = self.symbol.replace("/", "")
+                                side = "BUY" if "LONG" in trade.action else "SELL"
+                                position_side = "LONG" if "LONG" in trade.action else "SHORT"
+                                is_close = trade.action.startswith("CLOSE")
+                                order_type = "MARKET" if is_close else "LIMIT"
+                                
+                                result = await self.client.place_order(
+                                    symbol=symbol_clean,
+                                    side=side,
+                                    position_side=position_side,
+                                    order_type=order_type,
+                                    quantity=trade.quantity,
+                                    price=trade.price,
+                                )
+                                
+                                # 处理结果
+                                if self.use_realtime:
+                                    if result and "error" not in result:
+                                        fill_price = float(result.get("avgPrice", trade.price))
+                                        self._executed_trades.append({
+                                            "action": trade.action,
+                                            "price": fill_price,
+                                            "quantity": trade.quantity,
+                                            "pnl": 0,
+                                        })
+                                        _logger.info(f"[实时] {trade.action}: qty={trade.quantity:.4f}, fill_price={fill_price:.2f}")
+                                    else:
+                                        _logger.error(f"[实时] 订单失败: {trade.action}, error={result.get('msg', '')}")
+                                else:
+                                    if result and "error" not in result:
+                                        fill_price = float(result.get("avgPrice", trade.price))
+                                        self._executed_trades.append({
+                                            "action": trade.action,
+                                            "price": fill_price,
+                                            "quantity": trade.quantity,
+                                            "pnl": 0,
+                                        })
+                                        _logger.info(f"[实时] {trade.action}: qty={trade.quantity:.4f}, fill_price={fill_price:.2f}")
+                                    else:
+                                        _logger.error(f"[实时] 订单失败: {trade.action}, error={result.get('msg', '')}")
+                            
+                            # 同步策略资金到客户端余额
+                            if not self.use_realtime:
+                                self.strategy.current_capital = self.client._balance
+                    
+                    # 打印实时状态
+                    self._print_realtime_status(total_bars, current_price)
+                else:
+                    # 没有新K线，每5分钟打印一次等待信息
+                    now = time.time()
+                    if last_wait_log_time == 0 or (now - last_wait_log_time) >= 300:
+                        _logger.info(f"[实时] 等待新的4H K线... (当前时间: {pd.Timestamp.now()})")
+                        last_wait_log_time = now
+                
+            except KeyboardInterrupt:
+                _logger.info("[实时] 用户中断，退出实时监控")
+                break
+            except Exception as e:
+                _logger.error(f"[实时] 实时监控异常: {e}", exc_info=True)
+                # 继续运行，不因单次异常退出
+                continue
+        
         self._running = False
         await self.client.close()
-        return await self._generate_report()
+        report = await self._generate_report()
+        # 标识是否正常处理完所有数据
+        report["completed"] = True
+        return report
 
     def _sync_strategy_to_client(self) -> None:
         """同步策略持仓状态到客户端（用于止损/止盈后更新）"""
@@ -933,6 +1121,33 @@ class CryptoChanLiveExecutor:
 
         _logger.info(
             f"[{mode_tag}] [{i + 1}/{total}] price={current_price:.2f} | "
+            f"余额=${balance:,.2f} | 权益=${equity:,.2f} ({pnl_pct:+.2f}%) | "
+            f"多仓={h.long_qty:.4f}@{h.long_entry_price:.2f} | "
+            f"空仓={h.short_qty:.4f}@{h.short_entry_price:.2f} | "
+            f"加仓={self.strategy._add_count}/3"
+        )
+
+    def _print_realtime_status(self, total: int, current_price: float) -> None:
+        """打印实时监控状态"""
+        h = self.strategy.hedging
+        mode_tag = "Live" if self.use_realtime else "Paper"
+
+        # 获取余额（两种模式不同）
+        if self.use_realtime:
+            balance = self._balance
+        else:
+            balance = self.client._balance
+
+        # 计算权益
+        equity = balance
+        if h.long_qty > 0:
+            equity += (current_price - h.long_entry_price) * h.long_qty
+        if h.short_qty > 0:
+            equity += (h.short_entry_price - current_price) * h.short_qty
+        pnl_pct = ((equity - self.initial_capital) / self.initial_capital * 100) if self.initial_capital > 0 else 0
+
+        _logger.info(
+            f"[实时] [{total}/{total}] price={current_price:.2f} | "
             f"余额=${balance:,.2f} | 权益=${equity:,.2f} ({pnl_pct:+.2f}%) | "
             f"多仓={h.long_qty:.4f}@{h.long_entry_price:.2f} | "
             f"空仓={h.short_qty:.4f}@{h.short_entry_price:.2f} | "
@@ -1016,7 +1231,7 @@ def main():
   python run_crypto_chan_live.py --foreground
         """
     )
-    parser.add_argument("--symbol", default="ETH/USDC", help="交易对 (默认: ETH/USDC)")
+    parser.add_argument("--symbol", default="ETH/USDT", help="交易对 (默认: ETH/USDT)")
     parser.add_argument("--capital", type=float, default=10000.0, help="初始资金 (默认: 10000)")
     parser.add_argument("--commission", type=float, default=0.00018, help="手续费率 (默认: 0.0018%%)")
     parser.add_argument("--duration", type=int, default=0, help="运行时长（小时），0=持续运行")
@@ -1161,7 +1376,12 @@ def main():
             _logger.info("=" * 50)
             report = asyncio.run(_run())
             
-            # 运行完成（非异常退出）
+            # 检查是否正常退出（实时监控模式下，只有用户中断才会退出）
+            if report.get("completed"):
+                _logger.info("程序正常退出")
+                break
+            
+            # 运行时长达到（非异常退出）
             if args.duration > 0:
                 _logger.info(f"运行时长达到 ({args.duration}h)，正常退出")
                 break
