@@ -1,0 +1,9 @@
+- [x] 6 个孤立 strategies .pyc 已删除
+- [x] `trading_system/backtest/` 目录已删除
+- [x] `trading_system/okx/` 目录已删除
+- [x] `trading_system/data/__pycache__/backtest_data.cpython-37.pyc` 已删除
+- [x] 5 个旧策略 JSON 结果文件已删除，`crypto_chan_backtest_results.json` 保留
+- [x] `backtest_engine.log` 已删除
+- [x] `api_log.2026-04-24.log` 已删除
+- [x] `binance_connector-3.3.1.whl` 已删除
+- [x] 运行 `python run_crypto_chan_backtest.py --fast --no-plot` 无 import 错误，回测正常完成

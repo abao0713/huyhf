@@ -232,7 +232,7 @@ def main():
   python run_crypto_chan_backtest.py --symbol ETH/USDC --start 2026-01-01 --end 2026-06-01
         """
     )
-    parser.add_argument("--symbol", default="ETH/USDC", help="交易对 (默认: ETH/USDC)")
+    parser.add_argument("--symbol", default="ETH/USDT", help="交易对 (默认: ETH/USDT)")
     parser.add_argument("--capital", type=float, default=10000.0, help="初始资金 (默认: 10000)")
     parser.add_argument("--commission", type=float, default=0.0004, help="手续费率 (默认: 0.04%%)")
     parser.add_argument("--days", type=int, default=90, help="回测天数（CCXT模式）(默认: 90)")
@@ -352,7 +352,6 @@ def main():
         try:
             # 从回测引擎提取缠论分析数据
             chan_4h = engine.strategy._chan_4h
-            macd_4h = engine.strategy._macd_4h
 
             # 从 trade_history 提取买卖点信号
             buy_sell_points = []
@@ -405,44 +404,14 @@ def main():
                         'price': price,
                     })
 
-            # 构建背驰连线数据
-            divergence_lines = []
-            beichi_pens = []
-            chan_pens = getattr(chan_4h, 'pens', [])
-            for pen in chan_pens:
-                if hasattr(pen, 'macd_area') and pen.macd_area:
-                    beichi_pens.append(pen)
-            if len(beichi_pens) >= 2:
-                for j in range(1, len(beichi_pens)):
-                    p0 = beichi_pens[j - 1]
-                    p1 = beichi_pens[j]
-                    if p0.direction == p1.direction:
-                        macd_ratio = 0.0
-                        if p0.macd_area != 0:
-                            macd_ratio = abs(p1.macd_area / p0.macd_area)
-                        if macd_ratio < 0.85 and macd_ratio > 0:
-                            div_type = 'bull' if p1.direction == 'down' else 'bear'
-                            try:
-                                divergence_lines.append({
-                                    'type': div_type,
-                                    'price_idx1': p0.end_fractal.idx,
-                                    'price_idx2': p1.end_fractal.idx,
-                                    'macd_idx1': p0.end_fractal.idx,
-                                    'macd_idx2': p1.end_fractal.idx,
-                                })
-                            except Exception:
-                                pass
-
             # 生成图表
             chart = ChanBacktestChart(
                 df=df_4h,
                 fractals=getattr(chan_4h, 'fractals', []),
-                pens=chan_pens,
+                pens=getattr(chan_4h, 'pens', []),
                 segments=getattr(chan_4h, 'segments', []),
                 zhongshu_list=getattr(chan_4h, 'zhongshu_list', []),
                 buy_sell_points=buy_sell_points,
-                macd_data=macd_4h if macd_4h else {},
-                divergence_lines=divergence_lines,
                 title=f"缠论回测分析 - {args.symbol}",
             )
             chart.plot()

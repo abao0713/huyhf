@@ -1,0 +1,19 @@
+- [x] `PositionSizingConfig` dataclass 正确创建，默认值：`capital_usage_ratio=0.6`, `first_entry_pct=0.4`, `add_entry_pcts=[0.25, 0.18, 0.10]`, `max_add_count=3`
+- [x] `PositionManagementConfig` 包含 `position_sizing: PositionSizingConfig` 字段
+- [x] `from_dict` 方法正确反序列化 JSON 配置
+- [x] `_calculate_position_size_v2` 方法实现，首次开仓金额 = 总资金 × 0.6 × 0.4
+- [x] 加仓金额按 25%/18%/10% 阶梯递减，共 3 次加仓
+- [x] 超过 3 次加仓时返回 0 或不执行开仓，并记录日志
+- [x] 平仓后 `_add_count` 重置为 0
+- [x] 持有空仓时收到 OPEN_LONG，先执行 CLOSE_SHORT 再执行 OPEN_LONG
+- [x] 持有多仓时收到 OPEN_SHORT，先执行 CLOSE_LONG 再执行 OPEN_SHORT
+- [x] 方向切换后加仓计数器重置
+- [x] 同方向已有仓位时，按加仓逻辑处理（非跳过）
+- [x] 限价单在 bar 价格范围内时成交，成交价 = 限价
+- [x] 限价单不在 bar 范围内时进入 pending 列表，后续 bar 条件满足时成交
+- [x] `TradeRecordV2` 新增 `order_type` 和 `limit_price` 字段
+- [x] `generate_signal` 中所有仓位计算调用更新为 `_calculate_position_size_v2`
+- [x] 回测引擎按新的开仓/加仓/方向切换/限价逻辑运行
+- [x] 回测正常完成，exit code 0
+- [x] 回测结果中无同时持有 long 和 short 主仓位的情况
+- [x] 回测输出 JSON 报告中包含正确的 order_type 和 limit_price 字段

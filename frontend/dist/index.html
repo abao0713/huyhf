@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>交易系统回测面板</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; }
+    .app { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    .header { display: flex; justify-content: space-between; align-items: center; padding: 16px 0; border-bottom: 1px solid #1e293b; margin-bottom: 20px; }
+    .header h1 { font-size: 24px; color: #38bdf8; }
+    .nav { display: flex; gap: 8px; }
+    .nav button { padding: 8px 20px; border: 1px solid #334155; background: #1e293b; color: #94a3b8; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    .nav button.active { background: #0ea5e9; color: white; border-color: #0ea5e9; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+    .card { background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155; }
+    .card h3 { font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+    .card .value { font-size: 28px; font-weight: 700; }
+    .card .sub { font-size: 12px; color: #64748b; margin-top: 4px; }
+    .positive { color: #22c55e; }
+    .negative { color: #ef4444; }
+    .chart-container { background: #1e293b; border-radius: 12px; border: 1px solid #334155; padding: 16px; margin-bottom: 20px; }
+    .table-container { background: #1e293b; border-radius: 12px; border: 1px solid #334155; overflow: hidden; margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 12px 16px; background: #0f172a; color: #64748b; font-weight: 600; border-bottom: 1px solid #334155; }
+    td { padding: 10px 16px; border-bottom: 1px solid #1e293b; }
+    tr:hover td { background: #1a2744; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .tag-buy { background: #14532d; color: #22c55e; }
+    .tag-sell { background: #450a0a; color: #ef4444; }
+    .tag-early { background: #1e3a5f; color: #38bdf8; }
+    .tag-close { background: #422006; color: #f59e0b; }
+    .tag-partial { background: #4a044e; color: #e879f9; }
+    .form-section { background: #1e293b; border-radius: 12px; border: 1px solid #334155; padding: 20px; margin-bottom: 20px; }
+    .form-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .form-group { display: flex; flex-direction: column; gap: 4px; }
+    .form-group label { font-size: 12px; color: #64748b; }
+    .form-group input, .form-group select { padding: 8px 12px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0; font-size: 14px; }
+    .form-group select { cursor: pointer; }
+    .btn { padding: 10px 24px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
+    .btn-primary { background: #0ea5e9; color: white; }
+    .btn-primary:hover { background: #0284c7; }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #94a3b8; cursor: pointer; }
+    .btn-sm:hover { background: #334155; }
+    .flex-row { display: flex; gap: 12px; align-items: center; }
+    .mb-16 { margin-bottom: 16px; }
+    .text-center { text-align: center; }
+    .text-sm { font-size: 12px; color: #64748b; }
+    .loading { display: inline-block; width: 16px; height: 16px; border: 2px solid #334155; border-top-color: #0ea5e9; border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 8px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .signal-panel { background: #1e293b; border-radius: 12px; border: 1px solid #334155; padding: 20px; margin-bottom: 20px; }
+    .signal-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 16px; }
+    .signal-level h4 { font-size: 13px; color: #38bdf8; margin-bottom: 8px; border-bottom: 1px solid #334155; padding-bottom: 4px; }
+    .signal-item { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+    .signal-item .count { color: #64748b; }
+    .trade-detail { padding: 16px; border: 1px solid #334155; border-radius: 8px; margin-bottom: 12px; background: #0f172a; }
+    .trade-detail .reason { color: #94a3b8; font-size: 13px; margin: 8px 0; }
+    .trade-detail .indicators { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .trade-detail .indicator-tag { padding: 2px 8px; border-radius: 4px; font-size: 11px; background: #1e3a5f; color: #7dd3fc; }
+  </style>
+  <script type="module" crossorigin src="/assets/index-HPgQNSeX.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+</body>
+</html>

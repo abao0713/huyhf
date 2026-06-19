@@ -195,34 +195,13 @@ class BinanceRestClient:
         :param time_in_force: 有效期限 "GTC" / "IOC" / "FOK"
         :return: 下单结果
         """
-        # 如果精度缓存为空，先获取交易所信息
-        if not self._symbol_precision_cache:
-            await self.get_exchange_info()
-        
-        # 如果还没检测过持仓模式，自动检测
-        if self._is_hedge_mode is None:
-            await self.detect_hedge_mode()
-        
-        # 格式化精度
-        quantity = self._format_quantity(symbol, quantity)
-        if price is not None:
-            price = self._format_price(symbol, price)
-        
-        # 转换字符串参数为枚举
-        side_enum = NewOrderSideEnum(side)
-        
         params = {
             "symbol": symbol,
             "side": side_enum,
             "type": order_type,
             "quantity": quantity,
+            "position_side": "BOTH",
         }
-        
-        # 只有对冲模式才需要 position_side
-        if position_side is not None and self._is_hedge_mode:
-            position_side_enum = NewOrderPositionSideEnum(position_side)
-            params["position_side"] = position_side_enum
-        
         if order_type == "LIMIT":
             params["price"] = price
             params["time_in_force"] = NewOrderTimeInForceEnum(time_in_force)

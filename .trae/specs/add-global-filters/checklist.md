@@ -1,0 +1,24 @@
+# Checklist
+
+- [x] 回测引擎 `_precompute_all_indicators` 中新增 `_precomputed_sma60` 属性并正确计算日线 SMA60
+- [x] 策略 `_calculate_all_indicators` 中能从引擎预计算结果读取 SMA60，或在无引擎时自行计算
+- [x] `_determine_market_state()` 方法能正确区分 "trend" 和 "volatile" 状态
+- [x] `_count_zhongshu_touches()` 能正确统计价格在4H中枢上下沿的触碰次数
+- [x] 日线MA60过滤器：Daily Close < MA60 时阻止所有做多信号
+- [x] 日线MA60过滤器：Daily Close > MA60 时阻止所有做空信号
+- [x] 中枢震荡过滤器：触碰≥3次时阻止二买/类二买/二卖等趋势单
+- [x] 中枢震荡过滤器：触碰≥3次时仍允许中枢对冲单
+- [x] 资金费率过滤器：Funding Rate > 0.001 时阻止做多
+- [x] 资金费率过滤器：Funding Rate < -0.001 时阻止做空
+- [x] 动态止损：market_state=="trend" 时 SL=1.2×ATR
+- [x] 动态止损：market_state=="volatile" 时 SL=0.8×ATR
+- [x] 分段止盈：信号包含 tp1(1.5×ATR) 和 tp2(3.0×ATR)
+- [x] 盈亏比过滤器：(TP1-Entry)/(Entry-SL) < 1.5 时拒绝开仓
+- [x] TP1 触发时平仓50%，止损移至开仓价
+- [x] TP2 触发时平仓剩余50%
+- [x] 信号返回值包含 tp1/tp2/tp1_ratio/market_state 新字段
+- [x] `apply_signal()` 正确处理 tp1/tp2/market_state 新字段
+- [x] `HedgingState` 包含 long_tp2/short_tp2/long_tp1_hit/short_tp1_hit 新字段
+- [x] 回测 `--fast` 模式下 SMA60 预计算正常工作
+- [x] 所有过滤器日志正确输出（INFO级别）以支持调试
+- [x] 无语法错误，导入正常

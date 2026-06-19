@@ -6,11 +6,13 @@ Crypto_Chan_4H_Master_v1 - 回测入口脚本
     python run_ethusdc_mtf_backtest.py
     python run_ethusdc_mtf_backtest.py --capital 20000 --days 180
     python run_ethusdc_mtf_backtest.py --data-dir trading_system/data/binance_history
+    python run_ethusdc_mtf_backtest.py --plot  # 生成回测可视化图表
 """
 
 import argparse
 import sys
 from pathlib import Path
+from datetime import datetime
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 

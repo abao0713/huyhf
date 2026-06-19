@@ -1,0 +1,9 @@
+- [x] `ETHUSDC_1h.csv` 文件存在于 `trading_system/data/binance_history/`
+- [x] 1H数据行数为2880（720 × 4）
+- [x] 1H数据列名与4H数据一致
+- [x] 1H数据时间戳递增且间隔为1小时
+- [x] `load_csv_data` 函数能成功加载1H数据
+- [x] 加载时无"文件不存在"警告日志
+- [x] 1H和4H数据的DataFrame结构一致
+- [x] 回测无"文件不存在: ETHUSDC_1h.csv"警告
+- [x] 回测正常完成（exit code 0）

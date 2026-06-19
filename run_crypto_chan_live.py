@@ -71,7 +71,7 @@ console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(
 for _mod in ["trading_system.strategies.chan_strategy",
              "trading_system.strategies.mtf_fractal_strategy",
              "trading_system.strategies.chan_first_buy_strategy"]:
-    logging.getLogger(_mod).setLevel(logging.WARNING)
+    logging.getLogger(_mod).setLevel(logging.INFO)  # 调试时设为INFO，生产时可改回WARNING
 
 _logger = logging.getLogger("crypto_chan_live")
 _logger.setLevel(logging.INFO)
@@ -409,12 +409,14 @@ class CryptoChanLiveExecutor:
         use_realtime: bool = True,
         dingtalk_token: str = None,
         dingtalk_secret: str = None,
+        max_price_deviation: float = 0.002,
     ):
         self.config = config
         self.initial_capital = initial_capital
         self.commission = commission
         self.symbol = config.metadata.trading_pairs[0] if config.metadata.trading_pairs else "ETH/USDT"
         self.use_realtime = use_realtime
+        self.max_price_deviation = max_price_deviation  # 限价单回退市价单时的最大价格偏差（默认0.2%）
 
         # 策略实例
         self.strategy = CryptoChan4HMasterStrategy(config)
@@ -464,7 +466,26 @@ class CryptoChanLiveExecutor:
             raise ValueError("4H数据为空，无法初始化策略")
 
         # 从API获取账户余额（使用 futures_account_balance_v3）
+        _logger.info(f"[Live] 正在获取账户余额...")
         balance_result = await self.client.get_account_balance()
+        _logger.debug(f"[Live] 余额API原始返回: {json.dumps(balance_result, default=str, ensure_ascii=False)}")
+
+        # 预加载交易对精度规则（tickSize/stepSize/minQty/minNotional）
+        symbol_clean = self.symbol.replace("/", "")
+        _logger.info(f"[Live] 正在加载交易对精度规则: {symbol_clean}...")
+        try:
+            exchange_info = await self.client.get_exchange_info()
+            if "error" not in exchange_info:
+                precision = self.client._get_precision(symbol_clean)
+                _logger.info(
+                    f"[Live] 精度规则已加载: tickSize={precision.get('tick_size')}, "
+                    f"stepSize={precision.get('step_size')}, minQty={precision.get('min_qty')}, "
+                    f"minNotional={precision.get('min_notional')}"
+                )
+            else:
+                _logger.warning(f"[Live] 获取exchange_info失败，将使用默认精度: {exchange_info.get('msg', '')}")
+        except Exception as e:
+            _logger.warning(f"[Live] 获取exchange_info异常，将使用默认精度: {e}")
         if "error" not in balance_result:
             # 新的返回格式是字典，包含完整的余额信息
             self._balance = balance_result.get("availableBalance", self.initial_capital)
@@ -485,6 +506,13 @@ class CryptoChanLiveExecutor:
             _logger.warning(f"[Live] 无法获取账户余额，使用默认值: ${self.initial_capital:,.2f}")
             self._balance = self.initial_capital
 
+        # 启动前检查仓位并平仓（保证策略从零仓位开始）
+        await self._close_all_positions()
+        # 平仓后重新获取余额（反映平仓后的资金变化）
+        await self._refresh_balance()
+        self.initial_capital = self._balance
+        _logger.info(f"[Live] 平仓后最终可用余额: ${self._balance:,.2f}（已设为初始资金）")
+
         # 发送策略启动通知
         self._send_dingtalk_status("started", {
             "symbol": self.symbol,
@@ -493,8 +521,18 @@ class CryptoChanLiveExecutor:
         })
 
         # 使用策略直接处理数据（不需要预计算指标）
+        _logger.info(
+            f"[Live] 注入策略数据: 4H={len(df_4h)}行, 1H={len(df_1h) if not df_1h.empty else 0}行, "
+            f"15M={len(df_15m) if not df_15m.empty else 0}行, 1D={len(df_daily) if not df_daily.empty else 0}行"
+        )
         self.strategy.inject_data(df_4h, df_1h, df_15m, df_daily)
-        _logger.info("[Live] 策略数据注入完成")
+        _logger.info(
+            f"[Live] 策略数据注入完成: 日线趋势={self.strategy.daily_trend}, "
+            f"市场状态={self.strategy._market_regime.value}, "
+            f"4H背驰: 顶={self.strategy._chan_4h.beichi_top}, 底={self.strategy._chan_4h.beichi_bottom}, "
+            f"4H分型: 顶={self.strategy._chan_4h.has_top_fractal}, 底={self.strategy._chan_4h.has_bottom_fractal}, "
+            f"中枢数={len(self.strategy._chan_4h.zhongshu_list)}"
+        )
 
         # 记录最后一个4H bar的close_time用于后续检测新bar
         if "close_time" in df_4h.columns:
@@ -508,6 +546,108 @@ class CryptoChanLiveExecutor:
         self._dfs = dfs
         _logger.info(f"[Paper] 策略初始化完成, 已加载 {len(df_4h)} 根4H K线, 当前bar_index={self._bar_index}")
 
+    async def _refresh_balance(self) -> float:
+        """调用API刷新账户余额，返回最新可用余额"""
+        try:
+            result = await self.client.get_account_balance()
+            if "error" not in result:
+                new_balance = float(result.get("availableBalance", self._balance))
+                if abs(new_balance - self._balance) > 0.01:
+                    _logger.info(f"[Live] 余额刷新: ${self._balance:,.2f} → ${new_balance:,.2f}")
+                self._balance = new_balance
+                self.strategy.current_capital = self._balance
+            else:
+                _logger.debug(f"[Live] 余额刷新失败(使用缓存值): {result.get('msg', '')}")
+        except Exception as e:
+            _logger.debug(f"[Live] 余额刷新异常(使用缓存值): {e}")
+        return self._balance
+
+    async def _close_all_positions(self) -> None:
+        """启动前检查仓位，撤销挂单并市价平仓所有持仓
+        
+        保证策略从“零仓位”状态开始运行，避免遗留仓位与策略信号冲突。
+        """
+        symbol_clean = self.symbol.replace("/", "")
+        _logger.info(f"[启动] 检查现有仓位和挂单: {symbol_clean}...")
+        
+        # —— 1. 撤销所有未成交挂单 ——
+        try:
+            open_orders = await self.client.get_open_orders(symbol=symbol_clean)
+            if open_orders:
+                _logger.info(f"[启动] 发现 {len(open_orders)} 个未成交挂单，正在撤销...")
+                for order in open_orders:
+                    order_id = order.get("orderId")
+                    if order_id:
+                        cancel_result = await self.client.cancel_order(
+                            symbol=symbol_clean, order_id=int(order_id)
+                        )
+                        if "error" not in cancel_result:
+                            _logger.info(f"[启动] 撤销挂单成功: orderId={order_id}, "
+                                        f"side={order.get('side')}, price={order.get('price')}")
+                        else:
+                            _logger.warning(f"[启动] 撤销挂单失败: orderId={order_id}, error={cancel_result}")
+            else:
+                _logger.info("[启动] 无未成交挂单")
+        except Exception as e:
+            _logger.warning(f"[启动] 撤销挂单异常: {e}")
+        
+        # —— 2. 查询并平仓所有持仓 ——
+        try:
+            positions = await self.client.get_positions(symbol=symbol_clean)
+            active_positions = [
+                p for p in positions
+                if abs(float(p.get("positionAmt", 0))) > 0
+            ]
+            
+            if not active_positions:
+                _logger.info("[启动] 当前无持仓，策略将从零仓位开始")
+                return
+            
+            _logger.info(f"[启动] 发现 {len(active_positions)} 个持仓，正在平仓...")
+            for pos in active_positions:
+                position_amt = float(pos.get("positionAmt", 0))
+                position_side = pos.get("positionSide", "BOTH")
+                entry_price = float(pos.get("entryPrice", 0))
+                unrealized_pnl = float(pos.get("unRealizedProfit", 0))
+                abs_qty = abs(position_amt)
+                
+                # 确定平仓方向：多仓用 SELL 平，空仓用 BUY 平
+                if position_amt > 0:
+                    side = "SELL"
+                    direction = "多仓"
+                else:
+                    side = "BUY"
+                    direction = "空仓"
+                
+                _logger.info(
+                    f"[启动] 平仓 {direction}: {symbol_clean}, "
+                    f"positionSide={position_side}, qty={abs_qty}, "
+                    f"entryPrice={entry_price:.2f}, unrealizedPnL={unrealized_pnl:.2f}"
+                )
+                
+                result = await self.client.place_order(
+                    symbol=symbol_clean,
+                    side=side,
+                    order_type="MARKET",
+                    quantity=abs_qty,
+                )
+                
+                if "error" not in result:
+                    fill_price = float(result.get("avgPrice", 0) or 0)
+                    _logger.info(
+                        f"[启动] 平仓成功: {direction} {abs_qty}, "
+                        f"fill_price={fill_price:.2f}, orderId={result.get('orderId')}"
+                    )
+                else:
+                    _logger.error(f"[启动] 平仓失败: {direction} {abs_qty}, error={result}")
+            
+            # 平仓完成后刷新余额
+            await self._refresh_balance()
+            _logger.info(f"[启动] 所有持仓已平仓，最新余额: ${self._balance:,.2f}")
+            
+        except Exception as e:
+            _logger.error(f"[启动] 平仓异常: {e}", exc_info=True)
+    
     def _send_dingtalk_status(self, status_type: str, info: dict = None) -> None:
         """发送钉钉状态通知"""
         if not self._dingtalk:
@@ -540,14 +680,20 @@ class CryptoChanLiveExecutor:
         symbol_clean = self.symbol.replace("/", "")
         new_dfs = {}
 
+        _logger.info(f"[Live] 开始获取最新K线数据...")
         for tf, limit in [("4h", 10), ("1h", 40), ("15m", 160), ("1d", 5)]:
             try:
+                _logger.debug(f"[Live] 请求K线: pair={symbol_clean}, contractType=PERPETUAL, interval={tf}, limit={limit}")
                 result = await self.client.get_continuous_klines(
                     pair=symbol_clean,
                     contractType="PERPETUAL",
                     interval=tf,
                     limit=limit,
                 )
+                _logger.debug(f"[Live] {tf} K线响应: 类型={type(result).__name__}, 长度={len(result) if isinstance(result, list) else 'N/A'}")
+                if isinstance(result, list) and result:
+                    _logger.debug(f"[Live] {tf} 首根K线: {result[0]}")
+                    _logger.debug(f"[Live] {tf} 末根K线: {result[-1]}")
                 if isinstance(result, list) and result:
                     rows = []
                     for candle in result:
@@ -571,6 +717,13 @@ class CryptoChanLiveExecutor:
         """检查止损/止盈/加仓条件，返回需要执行的订单列表"""
         orders = []
         hedging = self.strategy.hedging
+        _logger.debug(
+            f"[Paper] 检查平仓条件: price={current_price:.4f} | "
+            f"多头: qty={hedging.long_qty:.4f}, SL={hedging.long_stop_loss:.4f}, "
+            f"TP1={hedging.long_tp1:.4f}(hit={hedging.long_tp1_hit}), TP2={hedging.long_take_profit:.4f} | "
+            f"空头: qty={hedging.short_qty:.4f}, SL={hedging.short_stop_loss:.4f}, "
+            f"TP1={hedging.short_tp1:.4f}(hit={hedging.short_tp1_hit}), TP2={hedging.short_take_profit:.4f}"
+        )
 
         # 检查多头止损
         if hedging.long_qty > 0 and hedging.long_stop_loss > 0:
@@ -626,15 +779,16 @@ class CryptoChanLiveExecutor:
         """通过交易客户端执行订单列表（支持Paper和Live模式）"""
         symbol_clean = self.symbol.replace("/", "")
         mode_tag = "Live" if self.use_realtime else "Paper"
+        _logger.info(f"[{mode_tag}] 执行订单列表: 共{len(orders)}笔")
 
-        for order in orders:
+        for idx, order in enumerate(orders):
             action = order["action"]
             price = order["price"]
             quantity = order["quantity"]
             reason = order.get("reason", "")
+            _logger.info(f"[{mode_tag}] 订单[{idx+1}/{len(orders)}]: action={action}, price={price:.4f}, qty={quantity:.4f}, reason={reason}")
 
             side = "BUY" if "LONG" in action else "SELL"
-            position_side = "LONG" if "LONG" in action else "SHORT"
             is_close = action.startswith("CLOSE")
 
             if is_close:
@@ -643,64 +797,55 @@ class CryptoChanLiveExecutor:
                 order_type = "LIMIT"
 
             # 调用统一的客户端接口
+            _logger.info(
+                f"[{mode_tag}] 下单请求: symbol={symbol_clean}, side={side}, "
+                f"type={order_type}, qty={quantity:.4f}, price={price:.4f}"
+            )
             result = await self.client.place_order(
                 symbol=symbol_clean,
                 side=side,
-                position_side=position_side,
                 order_type=order_type,
                 quantity=quantity,
                 price=price,
             )
+            _logger.debug(f"[{mode_tag}] 下单响应: {json.dumps(result, default=str, ensure_ascii=False)}")
 
-            # 处理结果（两种模式的返回格式略有不同）
-            if self.use_realtime:
-                # Live模式：BinanceRestClient返回格式
-                if "orderId" in result and "error" not in result:
-                    order_id = result.get("orderId")
-                    # Live模式下限价单可能未立即成交，需要查询实际成交价
-                    if order_type == "LIMIT":
-                        self._pending_orders.append({
-                            "order_id": order_id,
-                            "symbol": symbol_clean,
-                            "action": action,
-                            "quantity": quantity,
-                            "reason": reason,
-                            "submitted_price": price,
-                        })
-                        _logger.info(f"[{mode_tag}] 限价单已提交: {action}, order_id={order_id}, "
-                                    f"price={price:.2f}, qty={quantity:.4f}")
-                    else:
-                        # 市价单立即成交
-                        fill_price = float(result.get("avgPrice", price) or price)
-                        self._executed_trades.append({
-                            "timestamp": datetime.now().isoformat(),
-                            "action": action,
-                            "price": fill_price,
-                            "quantity": quantity,
-                            "reason": reason,
-                            "order_id": order_id,
-                        })
-                        _logger.info(f"[{mode_tag}] 市价单成交: {action}, qty={quantity:.4f}, "
-                                    f"fill_price={fill_price:.2f}")
+
+            # Live模式：BinanceRestClient返回格式
+            if "orderId" in result and "error" not in result:
+                order_id = result.get("orderId")
+                # Live模式下限价单可能未立即成交，需要查询实际成交价
+                if order_type == "LIMIT":
+                    self._pending_orders.append({
+                        "order_id": order_id,
+                        "symbol": symbol_clean,
+                        "action": action,
+                        "quantity": quantity,
+                        "reason": reason,
+                        "submitted_price": price,
+                    })
+                    _logger.info(f"[{mode_tag}] 限价单已提交: {action}, order_id={order_id}, "
+                                f"price={price:.2f}, qty={quantity:.4f}")
                 else:
-                    error_msg = result.get("msg", result.get("error", "Unknown"))
-                    _logger.error(f"[{mode_tag}] 订单失败: {action}, error={error_msg}")
-            else:
-                # Paper模式：PaperTradingClient返回格式
-                if result.get("code") == 0:
-                    fill_price = float(result.get("avgPrice", price))
+                    # 市价单立即成交
+                    fill_price = float(result.get("avgPrice", price) or price)
                     self._executed_trades.append({
                         "timestamp": datetime.now().isoformat(),
                         "action": action,
                         "price": fill_price,
                         "quantity": quantity,
                         "reason": reason,
-                        "order_id": result.get("orderId"),
+                        "order_id": order_id,
                     })
-                    _logger.info(f"[{mode_tag}] 订单成交: {action}, qty={quantity:.4f}, "
-                                f"fill_price={fill_price:.2f}, reason={reason}")
-                else:
-                    _logger.error(f"[{mode_tag}] 订单失败: {action}, error={result.get('msg', 'Unknown')}")
+                    _logger.info(f"[{mode_tag}] 市价单成交: {action}, qty={quantity:.4f}, "
+                                f"fill_price={fill_price:.2f}")
+            else:
+                _logger.error(f"[{mode_tag}] 订单失败: {action}, error={result}")
+
+        # 订单执行完成后刷新余额
+        if orders:
+            await self._refresh_balance()
+
 
     async def run_loop(
         self,
@@ -802,23 +947,33 @@ class CryptoChanLiveExecutor:
 
             # 获取当前价格
             current_price = float(df_4h.iloc[i]["close"])
-            # 更新客户端的当前价格（用于计算盈亏）
-            if not self.use_realtime:
-                self.client._current_price[self.symbol.replace("/", "")] = current_price
+            # 更新客户端的当前价格（仅Paper模式下的模拟客户端需要）
 
             # 检查止损/止盈
             close_orders = self._check_close_conditions(current_price)
             if close_orders:
+                _logger.info(f"[历史] bar={i} 触发平仓条件: {[o.get('action') for o in close_orders]}")
                 await self._execute_orders(close_orders)
 
             # 同步策略持仓与客户端持仓
             self._sync_strategy_to_client()
 
             # 生成信号
+            _logger.debug(
+                f"[历史] bar={i} 生成信号前: 日线趋势={self.strategy.daily_trend}, "
+                f"市场状态={self.strategy._market_regime.value}, "
+                f"4H背驰: 顶={self.strategy._chan_4h.beichi_top}, 底={self.strategy._chan_4h.beichi_bottom}, "
+                f"4H分型: 顶={self.strategy._chan_4h.has_top_fractal}, 底={self.strategy._chan_4h.has_bottom_fractal}, "
+                f"中枢数={len(self.strategy._chan_4h.zhongshu_list)}, "
+                f"ATR={self.strategy._atr_value:.4f}"
+            )
             signal = self.strategy.generate_signal(bar_idx=i)
             if signal:
                 mode_tag = "Live" if self.use_realtime else "Paper"
-                _logger.info(f"[{mode_tag}] 信号: {signal.get('action')} @ {signal.get('price', 0):.2f}")
+                _logger.info(f"[{mode_tag}] bar={i} 信号: action={signal.get('action')}, price={signal.get('price', 0):.2f}, "
+                           f"stop_loss={signal.get('stop_loss', 0):.2f}, take_profit={signal.get('take_profit', 0):.2f}, "
+                           f"tp1={signal.get('tp1', 0):.2f}, reason={signal.get('reason', '')}")
+                _logger.debug(f"[{mode_tag}] bar={i} 信号完整数据: {json.dumps(signal, default=str, ensure_ascii=False)}")
                 
                 # 发送信号钉钉通知
                 self._send_dingtalk_signal(signal)
@@ -830,54 +985,43 @@ class CryptoChanLiveExecutor:
                 if trades_after > trades_before:
                     # 执行新增的交易记录
                     new_trades = self.strategy.trades[trades_before:]
-                    for trade in new_trades:
+                    _logger.info(f"[历史] bar={i} 新增{len(new_trades)}笔交易记录")
+                    for trade_idx, trade in enumerate(new_trades):
                         symbol_clean = self.symbol.replace("/", "")
                         side = "BUY" if "LONG" in trade.action else "SELL"
-                        position_side = "LONG" if "LONG" in trade.action else "SHORT"
                         is_close = trade.action.startswith("CLOSE")
                         order_type = "MARKET" if is_close else "LIMIT"
+                        _logger.info(
+                            f"[历史] bar={i} 交易[{trade_idx+1}/{len(new_trades)}]: "
+                            f"action={trade.action}, price={trade.price:.4f}, qty={trade.quantity:.4f}, "
+                            f"下单参数: symbol={symbol_clean}, side={side} "
+                            f"type={order_type}"
+                        )
 
                         result = await self.client.place_order(
                             symbol=symbol_clean,
                             side=side,
-                            position_side=position_side,
                             order_type=order_type,
                             quantity=trade.quantity,
                             price=trade.price,
                         )
+                        _logger.debug(f"[历史] bar={i} 下单响应: {json.dumps(result, default=str, ensure_ascii=False)}")
 
                         # 处理结果
-                        if self.use_realtime:
-                            if "orderId" in result and "error" not in result:
-                                order_id = result.get("orderId")
-                                if order_type == "LIMIT":
-                                    self._pending_orders.append({
-                                        "order_id": order_id,
-                                        "symbol": symbol_clean,
-                                        "action": trade.action,
-                                        "quantity": trade.quantity,
-                                        "submitted_price": trade.price,
-                                    })
-                                    _logger.info(f"[{mode_tag}] 限价单已提交: {trade.action}, order_id={order_id}")
-                                else:
-                                    fill_price = float(result.get("avgPrice", trade.price) or trade.price)
-                                    trade.price = fill_price
-                                    self._executed_trades.append({
-                                        "timestamp": datetime.now().isoformat(),
-                                        "action": trade.action,
-                                        "price": fill_price,
-                                        "limit_price": trade.limit_price,
-                                        "quantity": trade.quantity,
-                                        "order_type": order_type,
-                                        "reason": trade.reason,
-                                        "order_id": order_id,
-                                    })
-                                    _logger.info(f"[{mode_tag}] {trade.action}: qty={trade.quantity:.4f}, fill_price={fill_price:.2f}")
+                        order_success = result and "error" not in result
+                        if order_success:
+                            order_id = result.get("orderId")
+                            if order_type == "LIMIT":
+                                self._pending_orders.append({
+                                    "order_id": order_id,
+                                    "symbol": symbol_clean,
+                                    "action": trade.action,
+                                    "quantity": trade.quantity,
+                                    "submitted_price": trade.price,
+                                })
+                                _logger.info(f"[历史] bar={i} 限价单已提交: {trade.action}, order_id={order_id}")
                             else:
-                                _logger.error(f"[{mode_tag}] 订单失败: {trade.action}, error={result.get('msg', result.get('error', ''))}")
-                        else:
-                            if result.get("code") == 0:
-                                fill_price = float(result.get("avgPrice", trade.price))
+                                fill_price = float(result.get("avgPrice", trade.price) or trade.price)
                                 trade.price = fill_price
                                 self._executed_trades.append({
                                     "timestamp": datetime.now().isoformat(),
@@ -887,15 +1031,51 @@ class CryptoChanLiveExecutor:
                                     "quantity": trade.quantity,
                                     "order_type": order_type,
                                     "reason": trade.reason,
-                                    "order_id": result.get("orderId"),
+                                    "order_id": order_id,
                                 })
-                                _logger.info(f"[{mode_tag}] {trade.action}: qty={trade.quantity:.4f}, fill_price={fill_price:.2f}")
-                            else:
-                                _logger.error(f"[{mode_tag}] 订单失败: {trade.action}, error={result.get('msg', '')}")
+                                _logger.info(f"[历史] bar={i} 市价单成交: {trade.action}, qty={trade.quantity:.4f}, fill_price={fill_price:.2f}")
+                        else:
+                            # 限价单失败 → 尝试市价单回退（需检查价格偏差）
+                            _logger.warning(f"[历史] bar={i} 限价单失败: {trade.action}, error={result}")
+                            if order_type == "LIMIT" and not is_close:
+                                deviation = abs(current_price - trade.price) / trade.price if trade.price > 0 else float('inf')
+                                if deviation <= self.max_price_deviation:
+                                    _logger.info(
+                                        f"[历史] bar={i} 价格偏差 {deviation:.4f} <= {self.max_price_deviation}，"
+                                        f"回退市价单: {trade.action}"
+                                    )
+                                    result = await self.client.place_order(
+                                        symbol=symbol_clean,
+                                        side=side,
+                                        order_type="MARKET",
+                                        quantity=trade.quantity,
+                                    )
+                                    _logger.debug(f"[历史] bar={i} 市价单回退响应: {json.dumps(result, default=str, ensure_ascii=False)}")
+                                    if result and "error" not in result:
+                                        fill_price = float(result.get("avgPrice", trade.price) or trade.price)
+                                        trade.price = fill_price
+                                        self._executed_trades.append({
+                                            "timestamp": datetime.now().isoformat(),
+                                            "action": trade.action,
+                                            "price": fill_price,
+                                            "limit_price": trade.limit_price,
+                                            "quantity": trade.quantity,
+                                            "order_type": "MARKET",
+                                            "reason": trade.reason,
+                                            "order_id": result.get("orderId"),
+                                        })
+                                        _logger.info(f"[历史] bar={i} 市价单回退成交: {trade.action}, qty={trade.quantity:.4f}, fill_price={fill_price:.2f}")
+                                    else:
+                                        _logger.error(f"[历史] bar={i} 市价单回退也失败: {trade.action}, error={result}")
+                                else:
+                                    _logger.warning(
+                                        f"[历史] bar={i} 价格偏差 {deviation:.4f} > {self.max_price_deviation}，"
+                                        f"放弃市价回退: {trade.action} (current={current_price:.2f}, limit={trade.price:.2f})"
+                                    )
 
-                    # 同步策略资金到客户端余额
-                    if not self.use_realtime:
-                        self.strategy.current_capital = self.client._balance
+                    # 刷新余额并同步策略资金
+                    await self._refresh_balance()
+                    self.strategy.current_capital = self._balance
 
             # 打印状态
             self._print_status(i, total_bars, current_price)
@@ -920,11 +1100,14 @@ class CryptoChanLiveExecutor:
             last_bar_timestamp = int(last_bar_time)
         
         _logger.info(f"[实时] 最后一根K线时间: {last_bar_time}")
-        _logger.info(f"[实时] 开始监控新的4H K线...")
+        _logger.info(f"[实时] 开始实时监控（每次轮询检查信号和止损/止盈）...")
         
         # 实时监控循环
         realtime_bar_count = 0
-        last_wait_log_time = 0  # 上次打印等待日志的时间
+        total_bars = len(df_4h)
+        # 当前价格：始终取最新K线的收盘价（当前K线始终在形成中，任何时候都可检查信号）
+        current_price = float(df_4h.iloc[-1]["close"])
+        _logger.info(f"[实时] 初始价格: {current_price:.2f}")
         while self._running:
             try:
                 # 等待轮询间隔
@@ -932,6 +1115,10 @@ class CryptoChanLiveExecutor:
                 
                 # 获取最新的K线数据
                 symbol_clean = self.symbol.replace("/", "")
+                _logger.debug(
+                    f"[实时] 请求K线: pair={symbol_clean}, contractType=PERPETUAL, "
+                    f"interval=4h, limit=10"
+                )
                 latest_klines = await self.client.get_continuous_klines(
                     pair=symbol_clean,
                     contractType="PERPETUAL",
@@ -943,11 +1130,15 @@ class CryptoChanLiveExecutor:
                     _logger.warning("[实时] 获取K线数据失败，继续等待...")
                     continue
                 
+                _logger.debug(f"[实时] K线响应: 长度={len(latest_klines)}, 末根={latest_klines[-1]}")
+                
                 # 解析最新K线
                 latest_kline = latest_klines[-1]
                 latest_open_time = latest_kline[0]  # 第一列是open_time
                 
-                # 检查是否有新K线
+                # ============================================================
+                # 1. 如果出现了新K线（open_time 更新），更新策略数据
+                # ============================================================
                 if latest_open_time > last_bar_timestamp:
                     realtime_bar_count += 1
                     _logger.info(f"[实时] 检测到新的4H K线 #{realtime_bar_count}")
@@ -971,99 +1162,160 @@ class CryptoChanLiveExecutor:
                     df_4h = pd.concat([df_4h, new_row], ignore_index=True)
                     total_bars = len(df_4h)
                     
-                    # 获取当前价格
-                    current_price = new_bar_data["close"]
-                    
-                    # 更新客户端的当前价格
-                    if not self.use_realtime:
-                        self.client._current_price[self.symbol.replace("/", "")] = current_price
+                    _logger.info(
+                        f"[实时] bar={realtime_bar_count} 新K线数据: "
+                        f"time={new_bar_data['open_time']}, open={new_bar_data['open']:.2f}, "
+                        f"high={new_bar_data['high']:.2f}, low={new_bar_data['low']:.2f}, "
+                        f"close={new_bar_data['close']:.2f}, volume={new_bar_data['volume']:.4f}, "
+                        f"total_bars={total_bars}"
+                    )
                     
                     # 注入实时时间
                     self.strategy._sim_time = new_bar_data["open_time"].to_pydatetime()
                     
-                    # 注入数据到策略
+                    # 注入数据到策略（仅在新K线出现时更新策略内部数据结构）
                     self.strategy.inject_data_incremental(
                         df_4h, None, None, None,
                         update_1h=False, update_15m=False,
                     )
+                
+                # ============================================================
+                # 2. 每次轮询都执行：获取最新价格、检查止损/止盈、生成信号
+                #    （当前K线始终在形成中，任何时候都可检查信号和止损/止盈）
+                # ============================================================
+                # 始终取最新K线的收盘价作为当前价格
+                current_price = float(latest_klines[-1][4])
+                
+                # 检查止损/止盈
+                close_orders = self._check_close_conditions(current_price)
+                if close_orders:
+                    _logger.info(f"[实时] 触发平仓条件 (price={current_price:.2f}): {[o.get('action') for o in close_orders]}")
+                    await self._execute_orders(close_orders)
+                
+                # 同步策略持仓与客户端持仓
+                self._sync_strategy_to_client()
+                
+                # 生成信号
+                _logger.debug(
+                    f"[实时] 生成信号前: 日线趋势={self.strategy.daily_trend}, "
+                    f"市场状态={self.strategy._market_regime.value}, "
+                    f"4H背驰: 顶={self.strategy._chan_4h.beichi_top}, 底={self.strategy._chan_4h.beichi_bottom}, "
+                    f"4H分型: 顶={self.strategy._chan_4h.has_top_fractal}, 底={self.strategy._chan_4h.has_bottom_fractal}, "
+                    f"中枢数={len(self.strategy._chan_4h.zhongshu_list)}, ATR={self.strategy._atr_value:.4f}"
+                )
+                signal = self.strategy.generate_signal(bar_idx=total_bars - 1)
+                if signal:
+                    _logger.info(
+                        f"[实时] 信号: action={signal.get('action')}, "
+                        f"price={signal.get('price', 0):.2f}, stop_loss={signal.get('stop_loss', 0):.2f}, "
+                        f"take_profit={signal.get('take_profit', 0):.2f}, tp1={signal.get('tp1', 0):.2f}, "
+                        f"reason={signal.get('reason', '')}"
+                    )
+                    _logger.debug(f"[实时] 信号完整数据: {json.dumps(signal, default=str, ensure_ascii=False)}")
                     
-                    # 检查止损/止盈
-                    close_orders = self._check_close_conditions(current_price)
-                    if close_orders:
-                        await self._execute_orders(close_orders)
+                    # 发送信号钉钉通知
+                    self._send_dingtalk_signal(signal)
                     
-                    # 同步策略持仓与客户端持仓
-                    self._sync_strategy_to_client()
+                    trades_before = len(self.strategy.trades)
+                    self.strategy.apply_signal(signal)
+                    trades_after = len(self.strategy.trades)
                     
-                    # 生成信号
-                    signal = self.strategy.generate_signal(bar_idx=total_bars - 1)
-                    if signal:
-                        _logger.info(f"[实时] 信号: {signal.get('action')} @ {signal.get('price', 0):.2f}")
-                        
-                        # 发送信号钉钉通知
-                        self._send_dingtalk_signal(signal)
-                        
-                        trades_before = len(self.strategy.trades)
-                        self.strategy.apply_signal(signal)
-                        trades_after = len(self.strategy.trades)
-                        
-                        if trades_after > trades_before:
-                            # 执行新增的交易记录
-                            new_trades = self.strategy.trades[trades_before:]
-                            for trade in new_trades:
-                                symbol_clean = self.symbol.replace("/", "")
-                                side = "BUY" if "LONG" in trade.action else "SELL"
-                                position_side = "LONG" if "LONG" in trade.action else "SHORT"
-                                is_close = trade.action.startswith("CLOSE")
-                                order_type = "MARKET" if is_close else "LIMIT"
-                                
-                                result = await self.client.place_order(
-                                    symbol=symbol_clean,
-                                    side=side,
-                                    position_side=position_side,
-                                    order_type=order_type,
-                                    quantity=trade.quantity,
-                                    price=trade.price,
-                                )
-                                
-                                # 处理结果
-                                if self.use_realtime:
-                                    if result and "error" not in result:
-                                        fill_price = float(result.get("avgPrice", trade.price))
-                                        self._executed_trades.append({
-                                            "action": trade.action,
-                                            "price": fill_price,
-                                            "quantity": trade.quantity,
-                                            "pnl": 0,
-                                        })
-                                        _logger.info(f"[实时] {trade.action}: qty={trade.quantity:.4f}, fill_price={fill_price:.2f}")
-                                    else:
-                                        _logger.error(f"[实时] 订单失败: {trade.action}, error={result.get('msg', '')}")
-                                else:
-                                    if result and "error" not in result:
-                                        fill_price = float(result.get("avgPrice", trade.price))
-                                        self._executed_trades.append({
-                                            "action": trade.action,
-                                            "price": fill_price,
-                                            "quantity": trade.quantity,
-                                            "pnl": 0,
-                                        })
-                                        _logger.info(f"[实时] {trade.action}: qty={trade.quantity:.4f}, fill_price={fill_price:.2f}")
-                                    else:
-                                        _logger.error(f"[实时] 订单失败: {trade.action}, error={result.get('msg', '')}")
+                    if trades_after > trades_before:
+                        # 执行新增的交易记录
+                        new_trades = self.strategy.trades[trades_before:]
+                        _logger.info(f"[实时] 新增{len(new_trades)}笔交易记录")
+                        for trade_idx, trade in enumerate(new_trades):
+                            symbol_clean = self.symbol.replace("/", "")
+                            side = "BUY" if "LONG" in trade.action else "SELL"
+
+                            is_close = trade.action.startswith("CLOSE")
+                            order_type = "MARKET" if is_close else "LIMIT"
+                            _logger.info(
+                                f"[实时] 交易[{trade_idx+1}/{len(new_trades)}]: "
+                                f"action={trade.action}, price={trade.price:.4f}, qty={trade.quantity:.4f}, "
+                                f"下单参数: symbol={symbol_clean}, side={side} "
+                                f"type={order_type}"
+                            )
                             
-                            # 同步策略资金到客户端余额
-                            if not self.use_realtime:
-                                self.strategy.current_capital = self.client._balance
-                    
-                    # 打印实时状态
-                    self._print_realtime_status(total_bars, current_price)
-                else:
-                    # 没有新K线，每5分钟打印一次等待信息
-                    now = time.time()
-                    if last_wait_log_time == 0 or (now - last_wait_log_time) >= 300:
-                        _logger.info(f"[实时] 等待新的4H K线... (当前时间: {pd.Timestamp.now()})")
-                        last_wait_log_time = now
+                            result = await self.client.place_order(
+                                symbol=symbol_clean,
+                                side=side,
+                                order_type=order_type,
+                                quantity=trade.quantity,
+                                price=trade.price,
+                            )
+                            _logger.debug(f"[实时] 下单响应: {json.dumps(result, default=str, ensure_ascii=False)}")
+                            
+                            # 处理结果
+                            order_success = result and "error" not in result
+                            if order_success:
+                                order_id = result.get("orderId")
+                                if order_type == "LIMIT":
+                                    self._pending_orders.append({
+                                        "order_id": order_id,
+                                        "symbol": symbol_clean,
+                                        "action": trade.action,
+                                        "quantity": trade.quantity,
+                                        "submitted_price": trade.price,
+                                    })
+                                    _logger.info(f"[实时] 限价单已提交: {trade.action}, order_id={order_id}")
+                                else:
+                                    fill_price = float(result.get("avgPrice", trade.price) or trade.price)
+                                    trade.price = fill_price
+                                    self._executed_trades.append({
+                                        "action": trade.action,
+                                        "price": fill_price,
+                                        "quantity": trade.quantity,
+                                        "pnl": 0,
+                                    })
+                                    _logger.info(f"[实时] 市价单成交: {trade.action}, qty={trade.quantity:.4f}, fill_price={fill_price:.2f}")
+                            else:
+                                # 限价单失败 → 尝试市价单回退（需检查价格偏差）
+                                _logger.warning(f"[实时] 限价单失败: {trade.action}, error={result}")
+                                if order_type == "LIMIT" and not is_close:
+                                    deviation = abs(current_price - trade.price) / trade.price if trade.price > 0 else float('inf')
+                                    if deviation <= self.max_price_deviation:
+                                        _logger.info(
+                                            f"[实时] 价格偏差 {deviation:.4f} <= {self.max_price_deviation}，"
+                                            f"回退市价单: {trade.action}"
+                                        )
+                                        result = await self.client.place_order(
+                                            symbol=symbol_clean,
+                                            side=side,
+                                            order_type="MARKET",
+                                            quantity=trade.quantity,
+                                        )
+                                        _logger.debug(f"[实时] 市价单回退响应: {json.dumps(result, default=str, ensure_ascii=False)}")
+                                        if result and "error" not in result:
+                                            fill_price = float(result.get("avgPrice", trade.price) or trade.price)
+                                            trade.price = fill_price
+                                            self._executed_trades.append({
+                                                "action": trade.action,
+                                                "price": fill_price,
+                                                "quantity": trade.quantity,
+                                                "pnl": 0,
+                                            })
+                                            _logger.info(f"[实时] 市价单回退成交: {trade.action}, qty={trade.quantity:.4f}, fill_price={fill_price:.2f}")
+                                        else:
+                                            _logger.error(f"[实时] 市价单回退也失败: {trade.action}, error={result}")
+                                    else:
+                                        _logger.warning(
+                                            f"[实时] 价格偏差 {deviation:.4f} > {self.max_price_deviation}，"
+                                            f"放弃市价回退: {trade.action} (current={current_price:.2f}, limit={trade.price:.2f})"
+                                        )
+                        
+                        # 刷新余额并同步策略资金
+                        await self._refresh_balance()
+                        self.strategy.current_capital = self._balance
+                
+                # 打印实时状态
+                self._print_realtime_status(total_bars, current_price)
+                
+                # 每10分钟刷新一次余额
+                now = time.time()
+                if not hasattr(self, '_last_balance_refresh') or (now - self._last_balance_refresh) >= 600:
+                    await self._refresh_balance()
+                    self._last_balance_refresh = now
                 
             except KeyboardInterrupt:
                 _logger.info("[实时] 用户中断，退出实时监控")
@@ -1081,35 +1333,21 @@ class CryptoChanLiveExecutor:
         return report
 
     def _sync_strategy_to_client(self) -> None:
-        """同步策略持仓状态到客户端（用于止损/止盈后更新）"""
-        hedging = self.strategy.hedging
-        symbol_clean = self.symbol.replace("/", "")
-
-        # Live模式：不需要手动同步，由API管理持仓
-        if self.use_realtime:
-            return
-
-        # Paper模式：检查模拟盘是否有持仓，而策略已清空
-        client_positions = self.client._positions
-        if hedging.long_qty <= 0:
-            for p in list(client_positions):
-                if p.get("positionSide") == "LONG":
-                    client_positions.remove(p)
-        if hedging.short_qty <= 0:
-            for p in list(client_positions):
-                if p.get("positionSide") == "SHORT":
-                    client_positions.remove(p)
+        """同步策略持仓状态
+        
+        Live模式：由Binance API管理持仓，无需手动同步。
+        此处仅用于触发余额刷新。
+        """
+        # BinanceRestClient 由API直接管理持仓，不需要手动同步
+        pass
 
     def _print_status(self, i: int, total: int, current_price: float) -> None:
         """打印当前状态"""
         h = self.strategy.hedging
         mode_tag = "Live" if self.use_realtime else "Paper"
 
-        # 获取余额（两种模式不同）
-        if self.use_realtime:
-            balance = self._balance
-        else:
-            balance = self.client._balance
+        # 统一使用本地跟踪余额（Live模式由 _refresh_balance 定期刷新）
+        balance = self._balance
 
         # 计算权益
         equity = balance
@@ -1132,11 +1370,8 @@ class CryptoChanLiveExecutor:
         h = self.strategy.hedging
         mode_tag = "Live" if self.use_realtime else "Paper"
 
-        # 获取余额（两种模式不同）
-        if self.use_realtime:
-            balance = self._balance
-        else:
-            balance = self.client._balance
+        # 统一使用本地跟踪余额（Live模式由 _refresh_balance 定期刷新）
+        balance = self._balance
 
         # 计算权益
         equity = balance
@@ -1158,15 +1393,17 @@ class CryptoChanLiveExecutor:
         """生成最终报告"""
         mode_tag = "Live" if self.use_realtime else "Paper"
 
-        # 获取账户信息（两种模式不同）
-        if self.use_realtime:
+        # 通过API获取最新账户余额
+        final_balance = self._balance
+        try:
             account = await self.client.get_account_balance()
-            final_balance = float(account.get("availableBalance", self._balance))
-            initial_balance = self.initial_capital
-        else:
-            account = await self.client.get_account_balance()
-            final_balance = self.client._balance
-            initial_balance = self.client._initial_balance
+            if "error" not in account:
+                final_balance = float(account.get("availableBalance", self._balance))
+            else:
+                _logger.warning(f"[Report] 获取最终余额失败，使用缓存值: {account.get('msg', '')}")
+        except Exception as e:
+            _logger.warning(f"[Report] 获取最终余额异常，使用缓存值: {e}")
+        initial_balance = self.initial_capital
 
         total_pnl = final_balance - initial_balance
         pnl_pct = (total_pnl / initial_balance * 100) if initial_balance > 0 else 0
@@ -1248,6 +1485,7 @@ def main():
     parser.add_argument("--stop", action="store_true", help="停止守护进程")
     parser.add_argument("--status", action="store_true", help="查看守护进程状态")
     parser.add_argument("--restart", action="store_true", help="重启守护进程")
+    parser.add_argument("--max-deviation", type=float, default=0.002, help="限价单回退市价单的最大价格偏差（默认0.002=0.2%%）")
     args = parser.parse_args()
 
     script_path = sys.argv[0]
@@ -1303,6 +1541,7 @@ def main():
     print(f"  API Key:      {mask_secret(args.api_key)}（已配置）")
     if args.dingtalk_token:
         print(f"  钉钉通知:     已启用")
+    print(f"  价格偏差限制: {args.max_deviation:.4f} ({args.max_deviation*100:.2f}%%)")
     print("=" * 70)
 
     # 构建配置
@@ -1350,6 +1589,7 @@ def main():
         use_realtime=args.realtime,
         dingtalk_token=args.dingtalk_token,
         dingtalk_secret=args.dingtalk_secret,
+        max_price_deviation=args.max_deviation,
     )
     
     # 注册全局执行器实例（用于信号处理）
