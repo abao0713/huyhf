@@ -292,7 +292,7 @@ def build_config(symbol: str) -> StrategyConfigRoot:
             }
         },
         "indicators": {
-            "atr": {"period": 14, "source": "4h", "multiplier_stop_loss": 1.5, "multiplier_take_profit": 3.0},
+            "atr": {"period": 14, "source": "4h", "multiplier_stop_loss": 1.0, "multiplier_take_profit": 2.0},
             "macd": {"fast": 12, "slow": 26, "signal": 9}
         },
         "trade_logic": {
@@ -328,7 +328,7 @@ def build_config(symbol: str) -> StrategyConfigRoot:
                 "range_mode": {"upper_bound_short": "50%", "lower_bound_long": "50%", "net_exposure": "0%",
                                "exit_rule": "Close opposite side if price breaks 4h central pivot."}
             },
-            "sizing": {"method": "atr_based", "risk_per_trade_percent": 1.0,
+            "sizing": {"method": "atr_based", "risk_per_trade_percent": 2.0,
                        "calculation": "Position_Size = (Account_Equity * Risk%) / (ATR_4h * 1.5)"},
             "position_sizing": {
                 "capital_usage_ratio": 0.6,
@@ -370,7 +370,7 @@ def load_csv_data(symbol: str, data_dir: Path, start_date: Optional[str] = None,
             if "open_time" in df.columns:
                 df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
             dfs[tf] = df
-            _logger.info(f"加载 {tf}: {len(df)} 行 from {fp}")
+            _logger.debug(f"加载 {tf}: {len(df)} 行 from {fp}")
         else:
             _logger.warning(f"文件不存在: {fp}")
     if start_date and end_date:
@@ -451,6 +451,10 @@ class CryptoChanLiveExecutor:
         self._executed_trades: List[Dict] = []
         self._pending_orders: List[Dict] = []  # 待查询的订单ID
 
+        # 心跳日志：周期性存活状态（可通过环境变量 HEARTBEAT_INTERVAL_SEC 配置，默认 300 秒）
+        self._heartbeat_interval_sec: float = float(os.environ.get("HEARTBEAT_INTERVAL_SEC", "300"))
+        self._last_heartbeat_ts: float = time.time()
+
     async def initialize(self, dfs: Dict[str, pd.DataFrame]) -> None:
         """初始化策略和交易客户端
 
@@ -466,18 +470,18 @@ class CryptoChanLiveExecutor:
             raise ValueError("4H数据为空，无法初始化策略")
 
         # 从API获取账户余额（使用 futures_account_balance_v3）
-        _logger.info(f"[Live] 正在获取账户余额...")
+        _logger.debug(f"[Live] 正在获取账户余额...")
         balance_result = await self.client.get_account_balance()
         _logger.debug(f"[Live] 余额API原始返回: {json.dumps(balance_result, default=str, ensure_ascii=False)}")
 
         # 预加载交易对精度规则（tickSize/stepSize/minQty/minNotional）
         symbol_clean = self.symbol.replace("/", "")
-        _logger.info(f"[Live] 正在加载交易对精度规则: {symbol_clean}...")
+        _logger.debug(f"[Live] 正在加载交易对精度规则: {symbol_clean}...")
         try:
             exchange_info = await self.client.get_exchange_info()
             if "error" not in exchange_info:
                 precision = self.client._get_precision(symbol_clean)
-                _logger.info(
+                _logger.debug(
                     f"[Live] 精度规则已加载: tickSize={precision.get('tick_size')}, "
                     f"stepSize={precision.get('step_size')}, minQty={precision.get('min_qty')}, "
                     f"minNotional={precision.get('min_notional')}"
@@ -494,14 +498,17 @@ class CryptoChanLiveExecutor:
             # 更新初始资金为实时余额
             self.initial_capital = self._balance
             
-            # 记录完整的余额信息
-            _logger.info(f"[Live] 账户余额信息（已设置为初始资金）:")
-            _logger.info(f"  - 可用余额: ${balance_result.get('availableBalance', 0):,.2f}")
-            _logger.info(f"  - 跨仓钱包余额: ${balance_result.get('crossWalletBalance', 0):,.2f}")
-            _logger.info(f"  - 跨仓未实现盈亏: ${balance_result.get('crossUnPnl', 0):,.2f}")
-            _logger.info(f"  - 仓位初始保证金: ${balance_result.get('positionInitialMargin', 0):,.2f}")
-            _logger.info(f"  - 挂单初始保证金: ${balance_result.get('openOrderInitialMargin', 0):,.2f}")
-            _logger.info(f"  - 最大可提: ${balance_result.get('maxWithdrawAmount', 0):,.2f}")
+            # 记录完整的余额信息（仅一行摘要，明细见 DEBUG）
+            _logger.info(
+                f"[Live] 账户余额: 可用=${balance_result.get('availableBalance', 0):,.2f}, "
+                f"钱包=${balance_result.get('crossWalletBalance', 0):,.2f}, "
+                f"未实现盈亏=${balance_result.get('crossUnPnl', 0):,.2f}, "
+                f"最大可提=${balance_result.get('maxWithdrawAmount', 0):,.2f}"
+            )
+            _logger.debug(
+                f"[Live] 余额明细: 仓位初始保证金=${balance_result.get('positionInitialMargin', 0):,.2f}, "
+                f"挂单初始保证金=${balance_result.get('openOrderInitialMargin', 0):,.2f}"
+            )
         else:
             _logger.warning(f"[Live] 无法获取账户余额，使用默认值: ${self.initial_capital:,.2f}")
             self._balance = self.initial_capital
@@ -526,6 +533,7 @@ class CryptoChanLiveExecutor:
             f"15M={len(df_15m) if not df_15m.empty else 0}行, 1D={len(df_daily) if not df_daily.empty else 0}行"
         )
         self.strategy.inject_data(df_4h, df_1h, df_15m, df_daily)
+        self.strategy._live_mode = True  # 启用实盘模式，使用iloc[-2]避免未来函数
         _logger.info(
             f"[Live] 策略数据注入完成: 日线趋势={self.strategy.daily_trend}, "
             f"市场状态={self.strategy._market_regime.value}, "
@@ -553,7 +561,7 @@ class CryptoChanLiveExecutor:
             if "error" not in result:
                 new_balance = float(result.get("availableBalance", self._balance))
                 if abs(new_balance - self._balance) > 0.01:
-                    _logger.info(f"[Live] 余额刷新: ${self._balance:,.2f} → ${new_balance:,.2f}")
+                    _logger.debug(f"[Live] 余额刷新: ${self._balance:,.2f} → ${new_balance:,.2f}")
                 self._balance = new_balance
                 self.strategy.current_capital = self._balance
             else:
@@ -582,7 +590,7 @@ class CryptoChanLiveExecutor:
                             symbol=symbol_clean, order_id=int(order_id)
                         )
                         if "error" not in cancel_result:
-                            _logger.info(f"[启动] 撤销挂单成功: orderId={order_id}, "
+                            _logger.debug(f"[启动] 撤销挂单成功: orderId={order_id}, "
                                         f"side={order.get('side')}, price={order.get('price')}")
                         else:
                             _logger.warning(f"[启动] 撤销挂单失败: orderId={order_id}, error={cancel_result}")
@@ -680,7 +688,7 @@ class CryptoChanLiveExecutor:
         symbol_clean = self.symbol.replace("/", "")
         new_dfs = {}
 
-        _logger.info(f"[Live] 开始获取最新K线数据...")
+        _logger.debug(f"[Live] 开始获取最新K线数据...")
         for tf, limit in [("4h", 10), ("1h", 40), ("15m", 160), ("1d", 5)]:
             try:
                 _logger.debug(f"[Live] 请求K线: pair={symbol_clean}, contractType=PERPETUAL, interval={tf}, limit={limit}")
@@ -714,16 +722,22 @@ class CryptoChanLiveExecutor:
         return new_dfs
 
     def _check_close_conditions(self, current_price: float) -> List[Dict]:
-        """检查止损/止盈/加仓条件，返回需要执行的订单列表"""
+        """检查止损/止盈条件，返回需要执行的订单列表（对齐回测逻辑）"""
         orders = []
         hedging = self.strategy.hedging
         _logger.debug(
             f"[Paper] 检查平仓条件: price={current_price:.4f} | "
             f"多头: qty={hedging.long_qty:.4f}, SL={hedging.long_stop_loss:.4f}, "
-            f"TP1={hedging.long_tp1:.4f}(hit={hedging.long_tp1_hit}), TP2={hedging.long_take_profit:.4f} | "
+            f"TP={hedging.long_take_profit:.4f} | "
             f"空头: qty={hedging.short_qty:.4f}, SL={hedging.short_stop_loss:.4f}, "
-            f"TP1={hedging.short_tp1:.4f}(hit={hedging.short_tp1_hit}), TP2={hedging.short_take_profit:.4f}"
+            f"TP={hedging.short_take_profit:.4f}"
         )
+
+        # 更新移动止损（对齐回测的 _update_trailing_stop_long/short）
+        if hedging.long_qty > 0:
+            self.strategy._update_trailing_stop_long()
+        if hedging.short_qty > 0:
+            self.strategy._update_trailing_stop_short()
 
         # 检查多头止损
         if hedging.long_qty > 0 and hedging.long_stop_loss > 0:
@@ -734,6 +748,14 @@ class CryptoChanLiveExecutor:
                     "price": current_price,
                     "quantity": hedging.long_qty,
                     "reason": "止损"
+                })
+            elif current_price >= hedging.long_take_profit:
+                _logger.info(f"[Paper] 多头止盈触发: price={current_price:.2f} >= TP={hedging.long_take_profit:.2f}")
+                orders.append({
+                    "action": "CLOSE_LONG",
+                    "price": current_price,
+                    "quantity": hedging.long_qty,
+                    "reason": "止盈"
                 })
 
         # 检查空头止损
@@ -746,32 +768,14 @@ class CryptoChanLiveExecutor:
                     "quantity": hedging.short_qty,
                     "reason": "止损"
                 })
-
-        # 检查多头TP1（部分止盈）
-        if hedging.long_qty > 0 and hedging.long_tp1 > 0 and not hedging.long_tp1_hit:
-            if current_price >= hedging.long_tp1:
-                _logger.info(f"[Paper] 多头TP1触发: price={current_price:.2f} >= TP1={hedging.long_tp1:.2f}")
-                tp1_qty = hedging.long_qty * 0.5
-                orders.append({
-                    "action": "CLOSE_LONG",
-                    "price": current_price,
-                    "quantity": tp1_qty,
-                    "reason": "TP1部分止盈"
-                })
-                hedging.long_tp1_hit = True
-
-        # 检查空头TP1（部分止盈）
-        if hedging.short_qty > 0 and hedging.short_tp1 > 0 and not hedging.short_tp1_hit:
-            if current_price <= hedging.short_tp1:
-                _logger.info(f"[Paper] 空头TP1触发: price={current_price:.2f} <= TP1={hedging.short_tp1:.2f}")
-                tp1_qty = hedging.short_qty * 0.5
+            elif current_price <= hedging.short_take_profit:
+                _logger.info(f"[Paper] 空头止盈触发: price={current_price:.2f} <= TP={hedging.short_take_profit:.2f}")
                 orders.append({
                     "action": "CLOSE_SHORT",
                     "price": current_price,
-                    "quantity": tp1_qty,
-                    "reason": "TP1部分止盈"
+                    "quantity": hedging.short_qty,
+                    "reason": "止盈"
                 })
-                hedging.short_tp1_hit = True
 
         return orders
 
@@ -786,7 +790,7 @@ class CryptoChanLiveExecutor:
             price = order["price"]
             quantity = order["quantity"]
             reason = order.get("reason", "")
-            _logger.info(f"[{mode_tag}] 订单[{idx+1}/{len(orders)}]: action={action}, price={price:.4f}, qty={quantity:.4f}, reason={reason}")
+            _logger.debug(f"[{mode_tag}] 订单[{idx+1}/{len(orders)}]: action={action}, price={price:.4f}, qty={quantity:.4f}, reason={reason}")
 
             side = "BUY" if "LONG" in action else "SELL"
             is_close = action.startswith("CLOSE")
@@ -797,7 +801,7 @@ class CryptoChanLiveExecutor:
                 order_type = "LIMIT"
 
             # 调用统一的客户端接口
-            _logger.info(
+            _logger.debug(
                 f"[{mode_tag}] 下单请求: symbol={symbol_clean}, side={side}, "
                 f"type={order_type}, qty={quantity:.4f}, price={price:.4f}"
             )
@@ -991,7 +995,7 @@ class CryptoChanLiveExecutor:
                         side = "BUY" if "LONG" in trade.action else "SELL"
                         is_close = trade.action.startswith("CLOSE")
                         order_type = "MARKET" if is_close else "LIMIT"
-                        _logger.info(
+                        _logger.debug(
                             f"[历史] bar={i} 交易[{trade_idx+1}/{len(new_trades)}]: "
                             f"action={trade.action}, price={trade.price:.4f}, qty={trade.quantity:.4f}, "
                             f"下单参数: symbol={symbol_clean}, side={side} "
@@ -1085,9 +1089,7 @@ class CryptoChanLiveExecutor:
                 await asyncio.sleep(poll_interval)
 
         # 历史数据处理完成，进入实时监控模式
-        _logger.info("=" * 60)
         _logger.info("历史数据处理完成，进入实时监控模式")
-        _logger.info("=" * 60)
         
         # 重新设置 _running 为 True，确保进入实时监控循环
         self._running = True
@@ -1099,15 +1101,15 @@ class CryptoChanLiveExecutor:
         else:
             last_bar_timestamp = int(last_bar_time)
         
-        _logger.info(f"[实时] 最后一根K线时间: {last_bar_time}")
+        _logger.debug(f"[实时] 最后一根K线时间: {last_bar_time}")
         _logger.info(f"[实时] 开始实时监控（每次轮询检查信号和止损/止盈）...")
-        
+
         # 实时监控循环
         realtime_bar_count = 0
         total_bars = len(df_4h)
         # 当前价格：始终取最新K线的收盘价（当前K线始终在形成中，任何时候都可检查信号）
         current_price = float(df_4h.iloc[-1]["close"])
-        _logger.info(f"[实时] 初始价格: {current_price:.2f}")
+        _logger.debug(f"[实时] 初始价格: {current_price:.2f}")
         while self._running:
             try:
                 # 等待轮询间隔
@@ -1141,8 +1143,8 @@ class CryptoChanLiveExecutor:
                 # ============================================================
                 if latest_open_time > last_bar_timestamp:
                     realtime_bar_count += 1
-                    _logger.info(f"[实时] 检测到新的4H K线 #{realtime_bar_count}")
-                    _logger.info(f"[实时] 新K线时间: {pd.to_datetime(latest_open_time, unit='ms')}")
+                    _logger.debug(f"[实时] 检测到新的4H K线 #{realtime_bar_count}")
+                    _logger.debug(f"[实时] 新K线时间: {pd.to_datetime(latest_open_time, unit='ms')}")
                     
                     # 更新最后一根K线的时间戳
                     last_bar_timestamp = latest_open_time
@@ -1162,7 +1164,7 @@ class CryptoChanLiveExecutor:
                     df_4h = pd.concat([df_4h, new_row], ignore_index=True)
                     total_bars = len(df_4h)
                     
-                    _logger.info(
+                    _logger.debug(
                         f"[实时] bar={realtime_bar_count} 新K线数据: "
                         f"time={new_bar_data['open_time']}, open={new_bar_data['open']:.2f}, "
                         f"high={new_bar_data['high']:.2f}, low={new_bar_data['low']:.2f}, "
@@ -1185,7 +1187,17 @@ class CryptoChanLiveExecutor:
                 # ============================================================
                 # 始终取最新K线的收盘价作为当前价格
                 current_price = float(latest_klines[-1][4])
-                
+
+                # 心跳日志：周期性输出存活状态（默认每 5 分钟一次）
+                if time.time() - self._last_heartbeat_ts >= self._heartbeat_interval_sec:
+                    _logger.info(
+                        f"[心跳] alive | price={current_price:.2f} | "
+                        f"long={self.strategy.hedging.long_qty:.4f}@{self.strategy.hedging.long_entry_price:.2f} "
+                        f"short={self.strategy.hedging.short_qty:.4f}@{self.strategy.hedging.short_entry_price:.2f} | "
+                        f"bar={realtime_bar_count} | balance=${self._balance:,.2f}"
+                    )
+                    self._last_heartbeat_ts = time.time()
+
                 # 检查止损/止盈
                 close_orders = self._check_close_conditions(current_price)
                 if close_orders:
@@ -1203,7 +1215,9 @@ class CryptoChanLiveExecutor:
                     f"4H分型: 顶={self.strategy._chan_4h.has_top_fractal}, 底={self.strategy._chan_4h.has_bottom_fractal}, "
                     f"中枢数={len(self.strategy._chan_4h.zhongshu_list)}, ATR={self.strategy._atr_value:.4f}"
                 )
-                signal = self.strategy.generate_signal(bar_idx=total_bars - 1)
+                signal = self.strategy.generate_signal(
+                    bar_idx=total_bars - 1, live_mode=True, current_price=current_price
+                )
                 if signal:
                     _logger.info(
                         f"[实时] 信号: action={signal.get('action')}, "
@@ -1230,7 +1244,7 @@ class CryptoChanLiveExecutor:
 
                             is_close = trade.action.startswith("CLOSE")
                             order_type = "MARKET" if is_close else "LIMIT"
-                            _logger.info(
+                            _logger.debug(
                                 f"[实时] 交易[{trade_idx+1}/{len(new_trades)}]: "
                                 f"action={trade.action}, price={trade.price:.4f}, qty={trade.quantity:.4f}, "
                                 f"下单参数: symbol={symbol_clean}, side={side} "
@@ -1357,7 +1371,7 @@ class CryptoChanLiveExecutor:
             equity += (h.short_entry_price - current_price) * h.short_qty
         pnl_pct = ((equity - self.initial_capital) / self.initial_capital * 100) if self.initial_capital > 0 else 0
 
-        _logger.info(
+        _logger.debug(
             f"[{mode_tag}] [{i + 1}/{total}] price={current_price:.2f} | "
             f"余额=${balance:,.2f} | 权益=${equity:,.2f} ({pnl_pct:+.2f}%) | "
             f"多仓={h.long_qty:.4f}@{h.long_entry_price:.2f} | "
@@ -1381,7 +1395,7 @@ class CryptoChanLiveExecutor:
             equity += (h.short_entry_price - current_price) * h.short_qty
         pnl_pct = ((equity - self.initial_capital) / self.initial_capital * 100) if self.initial_capital > 0 else 0
 
-        _logger.info(
+        _logger.debug(
             f"[实时] [{total}/{total}] price={current_price:.2f} | "
             f"余额=${balance:,.2f} | 权益=${equity:,.2f} ({pnl_pct:+.2f}%) | "
             f"多仓={h.long_qty:.4f}@{h.long_entry_price:.2f} | "
@@ -1611,9 +1625,7 @@ def main():
     while _daemon_running:
         try:
             print(f"\n开始Live模式执行...")
-            _logger.info("=" * 50)
             _logger.info("策略执行器启动")
-            _logger.info("=" * 50)
             report = asyncio.run(_run())
             
             # 检查是否正常退出（实时监控模式下，只有用户中断才会退出）

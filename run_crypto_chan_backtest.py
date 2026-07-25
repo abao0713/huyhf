@@ -133,7 +133,7 @@ def build_config(symbol: str) -> StrategyConfigRoot:
             },
             "sizing": {
                 "method": "atr_based",
-                "risk_per_trade_percent": 1.0,
+                "risk_per_trade_percent": 2.5,
                 "calculation": "Position_Size = (Account_Equity * Risk%) / (ATR_4h * 1.5)"
             }
         },

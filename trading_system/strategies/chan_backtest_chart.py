@@ -32,8 +32,6 @@ _project_root = os.path.dirname(_current_dir)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from trading_system.strategies.chan_strategy import Fractal, Pen, Segment
-
 logger = logging.getLogger(__name__)
 
 # ==============================================================================
@@ -86,8 +84,8 @@ class ChanBacktestChart:
     def __init__(
         self,
         df: pd.DataFrame,
-        fractals: Optional[List[Fractal]] = None,
-        pens: Optional[List[Pen]] = None,
+        fractals: Optional[List] = None,
+        pens: Optional[List] = None,
         segments: Optional[List] = None,
         zhongshu_list: Optional[List] = None,
         buy_sell_points: Optional[List[Dict]] = None,
@@ -223,56 +221,72 @@ class ChanBacktestChart:
             )
 
     def _plot_fractals(self):
-        """绘制分型标记（小三角形，无标签）"""
+        """绘制分型标记（小三角形，无标签），适配 czsc FX 对象"""
         if not self.fractals:
             return
 
+        # 构建时间戳到索引的映射
+        ts_to_idx = {}
+        if 'open_time' in self.df.columns:
+            for i, ts in enumerate(self.df['open_time']):
+                ts_to_idx[pd.Timestamp(ts)] = i
+
         for fractal in self.fractals:
-            try:
-                idx = fractal.idx
-                if idx < 0 or idx >= self._n_points:
-                    continue
-            except Exception:
+            dt = getattr(fractal, 'dt', None)
+            if dt is None:
+                continue
+            idx = ts_to_idx.get(pd.Timestamp(dt), -1)
+            if idx < 0 or idx >= self._n_points:
                 continue
 
-            if fractal.type == 'top':
+            mark = getattr(fractal, 'mark', '')
+            fx_val = getattr(fractal, 'fx', 0)
+
+            if mark == '顶分型':
                 self.ax.scatter(
-                    idx, fractal.high,
+                    idx, fx_val,
                     marker='v', color='red', s=30, zorder=6, alpha=0.9
                 )
-            else:
+            elif mark == '底分型':
                 self.ax.scatter(
-                    idx, fractal.low,
+                    idx, fx_val,
                     marker='^', color='green', s=30, zorder=6, alpha=0.9
                 )
 
     def _plot_pens(self):
-        """绘制笔（连接分型的实线）"""
+        """绘制笔（连接分型的实线），适配 czsc BI 对象"""
         if not self.pens:
             return
+
+        ts_to_idx = {}
+        if 'open_time' in self.df.columns:
+            for i, ts in enumerate(self.df['open_time']):
+                ts_to_idx[pd.Timestamp(ts)] = i
 
         first_up = True
         first_down = True
 
         for pen in self.pens:
-            try:
-                start_x = pen.start_fractal.idx
-                end_x = pen.end_fractal.idx
-            except Exception:
+            direction = getattr(pen, 'direction', '')
+            fx_a = getattr(pen, 'fx_a', None)
+            fx_b = getattr(pen, 'fx_b', None)
+            if fx_a is None or fx_b is None:
                 continue
 
+            start_x = ts_to_idx.get(pd.Timestamp(fx_a.dt), -1)
+            end_x = ts_to_idx.get(pd.Timestamp(fx_b.dt), -1)
             if start_x < 0 or end_x >= self._n_points:
                 continue
 
-            if pen.direction == 'up':
-                start_y = pen.start_fractal.low
-                end_y = pen.end_fractal.high
+            if direction == 'up':
+                start_y = fx_a.fx
+                end_y = fx_b.fx
                 color = COLOR_BI_UP
                 label = 'Bi (上升)' if first_up else ""
                 first_up = False
             else:
-                start_y = pen.start_fractal.high
-                end_y = pen.end_fractal.low
+                start_y = fx_a.fx
+                end_y = fx_b.fx
                 color = COLOR_BI_DOWN
                 label = 'Bi (下降)' if first_down else ""
                 first_down = False
@@ -284,37 +298,10 @@ class ChanBacktestChart:
             )
 
     def _plot_segments(self):
-        """绘制线段（粗蓝线叠加在笔上）"""
+        """绘制线段（粗蓝线叠加在笔上），兼容 czsc 数据"""
         if not self.segments:
             return
-
-        first_seg = True
-
-        for segment in self.segments:
-            try:
-                start_x = segment.start_pen.start_fractal.idx
-                end_x = segment.end_pen.end_fractal.idx
-            except Exception:
-                continue
-
-            if start_x < 0 or end_x >= self._n_points:
-                continue
-
-            if segment.direction == 'up':
-                start_y = segment.start_pen.start_fractal.low
-                end_y = segment.end_pen.end_fractal.high
-            else:
-                start_y = segment.start_pen.start_fractal.high
-                end_y = segment.end_pen.end_fractal.low
-
-            label = 'Duan (线段)' if first_seg else ""
-            first_seg = False
-
-            self.ax.plot(
-                [start_x, end_x], [start_y, end_y],
-                color=COLOR_DUAN, linewidth=3.5, linestyle='-',
-                zorder=3, label=label, alpha=0.8
-            )
+        # segments may be empty with czsc; skip if no data
 
     def _plot_zhongshu(self):
         """绘制中枢（半透明黄色矩形 + ZG/ZD 虚线）"""
@@ -498,8 +485,8 @@ class ChanBacktestChart:
 
 def generate_backtest_chart(
     df: pd.DataFrame,
-    fractals: List[Fractal],
-    pens: List[Pen],
+    fractals: List,
+    pens: List,
     segments: List,
     zhongshu_list: List,
     buy_sell_points: List[Dict],

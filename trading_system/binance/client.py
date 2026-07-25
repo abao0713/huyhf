@@ -197,7 +197,7 @@ class BinanceRestClient:
         """
         params = {
             "symbol": symbol,
-            "side": side_enum,
+            "side": NewOrderSideEnum(side),
             "type": order_type,
             "quantity": quantity,
             "position_side": "BOTH",
