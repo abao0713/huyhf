@@ -25,9 +25,9 @@ import numpy as np
 import pandas as pd
 
 from .base_strategy import BaseStrategy
-from .chan_strategy import ChanStrategy
+from czsc import CZSC, RawBar, Freq
 from .chan_first_buy_strategy import ChanTheoryFirstBuyAnalyzer, ZhongShu
-from ..utils.indicators import calculate_macd, binance_klines_to_dataframe, calculate_macd_area, calculate_atr, calculate_ema
+from ..utils.indicators import calculate_macd, binance_klines_to_dataframe, calculate_macd_area, calculate_atr, calculate_ema, calculate_ma
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +131,8 @@ class ATRConfig:
     """ATR 指标配置"""
     period: int = 14
     source: str = "4h"
-    multiplier_stop_loss: float = 1.5
-    multiplier_take_profit: float = 3.0
+    multiplier_stop_loss: float = 1.0
+    multiplier_take_profit: float = 2.5
 
     @classmethod
     def from_dict(cls, d: dict) -> "ATRConfig":
@@ -264,7 +264,7 @@ class HedgingRules:
 class SizingConfig:
     """仓位计算配置"""
     method: str = "atr_based"
-    risk_per_trade_percent: float = 1.0
+    risk_per_trade_percent: float = 2.0
     calculation: str = "Position_Size = (Account_Equity * Risk%) / (ATR_4h * 1.5)"
 
     @classmethod
@@ -425,10 +425,11 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
     6. 双向持仓对冲管理
     """
 
-    def __init__(self, config: StrategyConfigRoot):
+    def __init__(self, config: StrategyConfigRoot, fast_mode: bool = True):
         super().__init__(config.metadata.name)
         self.config = config
         self.symbol = config.metadata.trading_pairs[0] if config.metadata.trading_pairs else "ETH/USDT"
+        self.fast_mode = fast_mode  # 快速模式：跳过CZSC缠论分析，仅使用简化指标
 
         # 多周期数据容器
         self.df_4h: pd.DataFrame = pd.DataFrame()
@@ -443,17 +444,21 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         self._atr_4h: pd.Series = pd.Series()
         self._atr_1h: pd.Series = pd.Series()
         self._atr_value: float = 0.0
+        self._rsi_4h: pd.Series = pd.Series()
+        self._bb_upper: pd.Series = pd.Series()
+        self._bb_lower: pd.Series = pd.Series()
+        self._bb_mid: pd.Series = pd.Series()
+        self._adx_4h: pd.Series = pd.Series()
 
         # 缠论分析结果
         self._chan_4h = ChanAnalysisResult()
         self._chan_1h = ChanAnalysisResult()
         self._chan_15m = ChanAnalysisResult()
 
-        # 缠论引擎实例 (复用 ChanStrategy)
-        symbol_clean = self.symbol.replace("/", "")
-        self._chan_engine_4h = ChanStrategy(symbol=symbol_clean, time_frame="4h", use_binance_client=False)
-        self._chan_engine_1h = ChanStrategy(symbol=symbol_clean, time_frame="1h", use_binance_client=False)
-        self._chan_engine_15m = ChanStrategy(symbol=symbol_clean, time_frame="15m", use_binance_client=False)
+        # 缠论引擎实例 (CZSC, 每次调用 _run_chan_analysis 时创建)
+        self._chan_engine_4h = None  # CZSC instance, created per bar
+        self._chan_engine_1h = None
+        self._chan_engine_15m = None
         self._chan_analyzer = ChanTheoryFirstBuyAnalyzer()
 
         # 持仓和对冲状态
@@ -473,6 +478,10 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         # 执行引擎上下文
         self._market_regime: MarketRegime = MarketRegime.UNKNOWN
         self._last_signal_bar_idx: int = -1
+        self._current_bar_idx: int = -1  # 当前bar索引
+        self._price_override: float = 0.0  # 1H迭代时覆盖当前价格
+        self._live_mode: bool = False  # 实盘模式：使用iloc[-2]代替iloc[-1]（当前bar仍在形成）
+        self._last_entry_bar: int = -999  # 上次入场bar索引（用于冷却期）
 
         # 背驰检测状态
         self._beichi_bottom_detected: bool = False
@@ -482,9 +491,12 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
 
         # 加仓计数
         self._add_count: int = 0
+        # 冷却期：上次平仓后的bar索引，避免频繁交易
+        self._last_close_bar: int = -999
+        self._cooldown_bars: int = 2
 
         logger.info(f"[{self.name}] 策略初始化完成: symbol={self.symbol}, "
-                   f"timeframes=4H/1H/15M")
+                   f"timeframes=4H/1H/15M, fast_mode={self.fast_mode}")
 
     # ─── 数据注入 ───
 
@@ -500,7 +512,8 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         if df_daily is not None and not df_daily.empty:
             self.df_daily = df_daily.copy()
         self._calculate_all_indicators()
-        self._run_chan_analysis()
+        if not self.fast_mode:
+            self._run_chan_analysis()
 
     def inject_data_incremental(self, df_4h: pd.DataFrame, df_1h: pd.DataFrame = None,
                                  df_15m: pd.DataFrame = None, df_daily: pd.DataFrame = None,
@@ -531,7 +544,8 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
 
         # 重新计算指标和缠论分析
         self._calculate_all_indicators()
-        self._run_chan_analysis()
+        if not self.fast_mode:
+            self._run_chan_analysis()
 
     def load_data_for_backtest(self, df_4h: pd.DataFrame, df_1h: pd.DataFrame = None,
                                df_15m: pd.DataFrame = None, df_daily: pd.DataFrame = None) -> None:
@@ -548,6 +562,7 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         """计算所有技术指标"""
         self._calculate_macd_all()
         self._calculate_atr_all()
+        self._calculate_rsi_bb()
         if not self.df_daily.empty:
             self._update_daily_trend()
 
@@ -579,6 +594,63 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         if not self._atr_4h.empty:
             self._atr_value = float(self._atr_4h.iloc[-1]) if not pd.isna(self._atr_4h.iloc[-1]) else 0.0
 
+    def _calculate_rsi_bb(self) -> None:
+        """计算RSI、Bollinger Bands和ADX（4H级别）"""
+        if self.df_4h.empty or len(self.df_4h) < 20:
+            return
+        closes = self.df_4h["close"].astype(float)
+        highs = self.df_4h["high"].astype(float)
+        lows = self.df_4h["low"].astype(float)
+        # RSI(14)
+        delta = closes.diff()
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        self._rsi_4h = 100.0 - (100.0 / (1.0 + rs))
+        # Bollinger Bands(20, 2)
+        self._bb_mid = closes.rolling(20).mean()
+        bb_std = closes.rolling(20).std()
+        self._bb_upper = self._bb_mid + 2 * bb_std
+        self._bb_lower = self._bb_mid - 2 * bb_std
+        # ADX(14)
+        self._adx_4h = self._calc_adx(highs, lows, closes, 14)
+
+    @staticmethod
+    def _calc_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+        """计算ADX"""
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs()
+        ], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean()
+        up_move = high - high.shift()
+        down_move = low.shift() - low
+        plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+        minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+        plus_di = 100 * pd.Series(plus_dm).rolling(period).mean() / atr
+        minus_di = 100 * pd.Series(minus_dm).rolling(period).mean() / atr
+        dx = (abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan)) * 100
+        adx = dx.rolling(period).mean()
+        return adx
+
+    def get_current_adx(self) -> float:
+        """获取当前ADX值"""
+        if not hasattr(self, '_adx_4h') or self._adx_4h.empty:
+            return 0.0
+        val = float(self._adx_4h.iloc[-1])
+        return val if not pd.isna(val) else 0.0
+
+    def get_current_rsi(self) -> float:
+        """获取当前RSI值"""
+        if self._rsi_4h.empty:
+            return 50.0
+        idx = -2 if self._live_mode else -1
+        val = float(self._rsi_4h.iloc[idx])
+        return val if not pd.isna(val) else 50.0
+
     def get_current_atr(self, source: str = "4h") -> float:
         """获取当前 ATR 值"""
         src = self._atr_4h if source == "4h" else self._atr_1h
@@ -607,21 +679,21 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         return stop_loss
 
     def _update_daily_trend(self) -> None:
-        """更新日线趋势判断（每日 0:00 UTC+8 刷新）"""
+        """更新日线趋势判断（基于 SMA20/SMA60），每日 0:00 UTC+8 刷新"""
         if self.df_daily.empty or len(self.df_daily) < 60:
             self.daily_trend = "NEUTRAL"
             return
         closes = self.df_daily["close"].astype(float)
-        ema20 = calculate_ema(closes, 20)
-        ema60 = calculate_ema(closes, 60)
-        if ema20.empty or ema60.empty:
+        sma20 = calculate_ma(closes, 20)
+        sma60 = calculate_ma(closes, 60)
+        if sma20.empty or sma60.empty:
             self.daily_trend = "NEUTRAL"
             return
-        e20 = float(ema20.iloc[-1])
-        e60 = float(ema60.iloc[-1])
-        if e20 > e60 * 1.02:
+        s20 = float(sma20.iloc[-1])
+        s60 = float(sma60.iloc[-1])
+        if s20 > s60 * 1.02:
             self.daily_trend = "UP"
-        elif e20 < e60 * 0.98:
+        elif s20 < s60 * 0.98:
             self.daily_trend = "DOWN"
         else:
             self.daily_trend = "NEUTRAL"
@@ -629,32 +701,74 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
     # ─── 缠论分析 ───
 
     def _run_chan_analysis(self) -> None:
-        """运行缠论分析（分型→笔→中枢→背驰）"""
-        for df, engine, result, label in [
-            (self.df_4h, self._chan_engine_4h, self._chan_4h, "4H"),
-            (self.df_1h, self._chan_engine_1h, self._chan_1h, "1H"),
-            (self.df_15m, self._chan_engine_15m, self._chan_15m, "15M"),
+        """运行缠论分析（分型→笔→中枢→背驰），使用 czsc.CZSC"""
+        freq_map = {
+            "4H": Freq.F240,
+            "1H": Freq.F60,
+            "15M": Freq.F15,
+        }
+        macd_map = {
+            "4H": self._macd_4h,
+            "1H": self._macd_1h,
+            "15M": self._macd_15m,
+        }
+
+        for df, result, label in [
+            (self.df_4h, self._chan_4h, "4H"),
+            (self.df_1h, self._chan_1h, "1H"),
+            (self.df_15m, self._chan_15m, "15M"),
         ]:
             if df.empty or len(df) < 10:
                 continue
             try:
-                engine.df_30m = df.copy()
-                engine._process_data()
-                result.fractals = getattr(engine, 'fractals', [])
-                result.pens = getattr(engine, 'pens', [])
-                result.segments = getattr(engine, 'segments', [])
-                zhongshu_list = self._identify_zhongshu(result.pens)
+                # 将 DataFrame 转换为 RawBar 列表
+                bars_raw = []
+                for _, row in df.iterrows():
+                    dt_val = row["open_time"]
+                    if isinstance(dt_val, pd.Timestamp):
+                        dt_val = dt_val.to_pydatetime()
+                    vol = float(row["volume"])
+                    close = float(row["close"])
+                    rb = RawBar(
+                        symbol=self.symbol,
+                        dt=dt_val,
+                        freq=freq_map[label],
+                        open=float(row["open"]),
+                        close=close,
+                        high=float(row["high"]),
+                        low=float(row["low"]),
+                        vol=vol,
+                        amount=vol * close,
+                    )
+                    bars_raw.append(rb)
+
+                # 创建 CZSC 实例
+                c = CZSC(bars_raw, max_bi_num=50)
+
+                # 提取分型和笔
+                result.fractals = c.fx_list
+                result.pens = c.bi_list
+
+                # 识别中枢
+                zhongshu_list = self._identify_zhongshu(result.pens, df)
                 result.zhongshu_list = zhongshu_list
+
+                # 检查分型（仅检查最近 5 个分型，反映当前最新状态）
                 if result.fractals:
-                    recent = result.fractals[-3:] if len(result.fractals) >= 3 else result.fractals
-                    for f in recent:
-                        if f.type == "bottom":
+                    recent_fractals = result.fractals[-5:]
+                    for f in recent_fractals:
+                        mark = getattr(f, 'mark', '')
+                        if mark == "底分型":
                             result.has_bottom_fractal = True
-                            result.last_bottom_low = f.low
-                        if f.type == "top":
+                            result.last_bottom_low = getattr(f, 'fx', 0.0)
+                        if mark == "顶分型":
                             result.has_top_fractal = True
-                            result.last_top_high = f.high
-                self._check_beichi(result, engine)
+                            result.last_top_high = getattr(f, 'fx', 0.0)
+
+                # 背驰判断
+                histogram = macd_map[label].get("histogram", pd.Series())
+                self._check_beichi(result, result.pens, histogram, df)
+
                 logger.debug(f"[{self.name}] {label} 缠论: 分型={len(result.fractals)}, "
                            f"笔={len(result.pens)}, 中枢={len(result.zhongshu_list)}, "
                            f"底背驰={result.beichi_bottom}, 顶背驰={result.beichi_top}")
@@ -662,28 +776,51 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
                 logger.warning(f"[{self.name}] {label} 缠论分析失败: {e}")
 
     @staticmethod
-    def _identify_zhongshu(pens: List) -> List:
+    def _identify_zhongshu(pens: List, df: pd.DataFrame = None) -> List:
         """
-        识别中枢（基于三笔重叠）
+        识别中枢（基于三笔重叠），适配 czsc BI 对象
 
         中枢定义：连续三笔的[高、低]区间有重叠
         上升中枢：下-上-下三笔重叠
         下跌中枢：上-下-上三笔重叠
+
+        czsc BI 对象属性: direction, high, low, fx_a, fx_b
+        start_idx/end_idx 使用实际 DataFrame bar 索引（通过时间戳匹配）
         """
+        def _find_bar_idx(dt_val) -> int:
+            """通过时间戳在 DataFrame 中查找行位置索引"""
+            if df is None or df.empty:
+                return -1
+            if isinstance(dt_val, pd.Timestamp):
+                ts = dt_val
+            else:
+                ts = pd.Timestamp(dt_val)
+            for i, ot in enumerate(df["open_time"]):
+                ot_ts = pd.Timestamp(ot)
+                if abs((ot_ts - ts).total_seconds()) <= 1:
+                    return i
+            return -1
+
         zhongshu_list = []
         if len(pens) < 3:
             return zhongshu_list
         for i in range(len(pens) - 2):
             p1, p2, p3 = pens[i], pens[i + 1], pens[i + 2]
-            high_vals = [p.high for p in [p1, p2, p3]]
-            low_vals = [p.low for p in [p1, p2, p3]]
+            high_vals = [p1.high, p2.high, p3.high]
+            low_vals = [p1.low, p2.low, p3.low]
             overlap_high = min(high_vals)
             overlap_low = max(low_vals)
             if overlap_low < overlap_high:
                 direction = "up" if p1.direction == "down" else "down"
+                # 使用实际 bar 索引（通过时间戳匹配）
+                start_idx = _find_bar_idx(p1.fx_a.dt)
+                end_idx = _find_bar_idx(p3.fx_b.dt)
+                if start_idx < 0 or end_idx < 0:
+                    start_idx = i
+                    end_idx = i + 2
                 zs = ZhongShu(
-                    start_idx=p1.start_fractal.idx,
-                    end_idx=p3.end_fractal.idx,
+                    start_idx=start_idx,
+                    end_idx=end_idx,
                     upper=round(overlap_high, 4),
                     lower=round(overlap_low, 4),
                     direction=direction,
@@ -705,35 +842,54 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         return merged
 
     @staticmethod
-    def _check_beichi(result: "ChanAnalysisResult", engine: Any) -> None:
+    def _check_beichi(result: "ChanAnalysisResult", pens: List, histogram: pd.Series, df: pd.DataFrame) -> None:
         """
-        背驰判断：比较相邻同向笔的 MACD 面积
+        背驰判断：比较相邻同向笔的 MACD 面积，适配 czsc BI 对象
 
         底背驰：价格新低，但 MACD 面积（绿柱和）缩小
         顶背驰：价格新高，但 MACD 面积（红柱和）缩小
+
+        czsc BI 对象属性: direction, fx_a, fx_b (FX 对象, 含 dt, fx)
         """
-        pens = result.pens
-        if len(pens) < 2:
+        if len(pens) < 2 or histogram.empty or df.empty:
             return
-        histogram = getattr(engine, 'histogram', pd.Series())
-        if histogram.empty:
-            return
+
+        def _find_idx(dt_val) -> int:
+            """通过时间戳在 DataFrame 中查找行位置索引，允许 ±1 秒容差"""
+            if isinstance(dt_val, pd.Timestamp):
+                ts = dt_val
+            else:
+                ts = pd.Timestamp(dt_val)
+            for i, ot in enumerate(df["open_time"]):
+                ot_ts = pd.Timestamp(ot)
+                if abs((ot_ts - ts).total_seconds()) <= 1:
+                    return i
+            return -1
+
         down_pens = [p for p in pens if hasattr(p, 'direction') and p.direction == 'down']
         up_pens = [p for p in pens if hasattr(p, 'direction') and p.direction == 'up']
+
         if len(down_pens) >= 2:
             p1, p2 = down_pens[-2], down_pens[-1]
-            area1 = calculate_macd_area(histogram, p1.start_fractal.idx, p1.end_fractal.idx)
-            area2 = calculate_macd_area(histogram, p2.start_fractal.idx, p2.end_fractal.idx)
-            if p2.end_fractal.low < p1.end_fractal.low and abs(area2) < abs(area1):
-                result.beichi_bottom = True
-                result.last_bottom_low = p2.end_fractal.low
+            s1, e1 = _find_idx(p1.fx_a.dt), _find_idx(p1.fx_b.dt)
+            s2, e2 = _find_idx(p2.fx_a.dt), _find_idx(p2.fx_b.dt)
+            if s1 >= 0 and e1 >= 0 and s2 >= 0 and e2 >= 0:
+                area1 = calculate_macd_area(histogram, s1, e1)
+                area2 = calculate_macd_area(histogram, s2, e2)
+                if p2.fx_b.fx < p1.fx_b.fx and abs(area2) < abs(area1):
+                    result.beichi_bottom = True
+                    result.last_bottom_low = p2.fx_b.fx
+
         if len(up_pens) >= 2:
             p1, p2 = up_pens[-2], up_pens[-1]
-            area1 = calculate_macd_area(histogram, p1.start_fractal.idx, p1.end_fractal.idx)
-            area2 = calculate_macd_area(histogram, p2.start_fractal.idx, p2.end_fractal.idx)
-            if p2.end_fractal.high > p1.end_fractal.high and area2 < area1:
-                result.beichi_top = True
-                result.last_top_high = p2.end_fractal.high
+            s1, e1 = _find_idx(p1.fx_a.dt), _find_idx(p1.fx_b.dt)
+            s2, e2 = _find_idx(p2.fx_a.dt), _find_idx(p2.fx_b.dt)
+            if s1 >= 0 and e1 >= 0 and s2 >= 0 and e2 >= 0:
+                area1 = calculate_macd_area(histogram, s1, e1)
+                area2 = calculate_macd_area(histogram, s2, e2)
+                if p2.fx_b.fx > p1.fx_b.fx and area2 < area1:
+                    result.beichi_top = True
+                    result.last_top_high = p2.fx_b.fx
 
     # ─── 中枢相关辅助方法 ───
 
@@ -931,6 +1087,80 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
         has_top = self._chan_1h.has_top_fractal
         return red_shrinking and has_top
 
+    # ─── czsc 分型直接入场信号 ───
+
+    def _detect_fractal_long_entry(self) -> Optional[Dict[str, Any]]:
+        """
+        基于 czsc 分型直接做多入场信号
+
+        条件:
+        1. 4H 级别出现底分型
+        2. 日线趋势非 DOWN
+        3. 1H 级别也有底分型确认
+        """
+        if not self._chan_4h.has_bottom_fractal:
+            return None
+        if self.daily_trend == "DOWN":
+            return None
+        if not self._chan_1h.has_bottom_fractal:
+            return None
+        current_price = float(self.df_4h.iloc[-1]["close"]) if not self.df_4h.empty else 0
+        if current_price <= 0:
+            return None
+        atr_val = self.get_current_atr("4h")
+        if atr_val <= 0:
+            return None
+        stop_loss = self._calculate_stop_loss(current_price, atr_val, 1.0, side="long")
+        take_profit = round(current_price + atr_val * 2.5, 4)
+        size = self._calculate_position_size(current_price, stop_loss)
+        logger.info(f"[{self.name}] 分型做多信号: price={current_price:.4f}, "
+                    f"stop={stop_loss:.4f}, tp={take_profit:.4f}, size={size:.4f}")
+        return {
+            "action": "OPEN_LONG",
+            "type": "fractal_long",
+            "price": current_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "size": size,
+            "reason": f"分型做多: 4H底分型+日线{self.daily_trend}+1H确认, ATR={atr_val:.4f}",
+        }
+
+    def _detect_fractal_short_entry(self) -> Optional[Dict[str, Any]]:
+        """
+        基于 czsc 分型直接做空入场信号
+
+        条件:
+        1. 4H 级别出现顶分型
+        2. 日线趋势非 UP
+        3. 1H 级别也有顶分型确认
+        """
+        if not self._chan_4h.has_top_fractal:
+            return None
+        if self.daily_trend == "UP":
+            return None
+        if not self._chan_1h.has_top_fractal:
+            return None
+        current_price = float(self.df_4h.iloc[-1]["close"]) if not self.df_4h.empty else 0
+        if current_price <= 0:
+            return None
+        atr_val = self.get_current_atr("4h")
+        if atr_val <= 0:
+            return None
+        stop_loss = self._calculate_stop_loss(current_price, atr_val, 1.0, side="short")
+        take_profit = round(current_price - atr_val * 2.5, 4)
+        size = self._calculate_position_size(current_price, stop_loss)
+        logger.info(f"[{self.name}] 分型做空信号: price={current_price:.4f}, "
+                    f"stop={stop_loss:.4f}, tp={take_profit:.4f}, size={size:.4f}")
+        return {
+            "action": "OPEN_SHORT",
+            "type": "fractal_short",
+            "price": current_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "size": size,
+            "reason": f"分型做空: 4H顶分型+日线{self.daily_trend}+1H确认, ATR={atr_val:.4f}",
+        }
+
     def _confirm_1h_volume_shrink(self) -> bool:
         """1H 缩量确认"""
         if self.df_1h.empty or "volume" not in self.df_1h.columns or len(self.df_1h) < 10:
@@ -1119,54 +1349,210 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
 
     # ─── 主信号生成 ───
 
-    def generate_signal(self, bar_idx: int = None) -> Optional[Dict[str, Any]]:
-        """生成交易信号（主入口）"""
+    def generate_signal(self, bar_idx: int = None, live_mode: bool = False,
+                        current_price: float = 0.0) -> Optional[Dict[str, Any]]:
+        """生成交易信号（主入口）
+
+        Args:
+            bar_idx: 当前K线索引（回测用）
+            live_mode: 实盘模式，True时使用iloc[-2]代替iloc[-1]（当前bar仍在形成）
+            current_price: 实盘实时价格（live_mode=True时生效）
+        """
         if self.df_4h.empty:
             return None
         if bar_idx is not None and bar_idx == self._last_signal_bar_idx:
             return None
         self._last_signal_bar_idx = bar_idx if bar_idx is not None else self._last_signal_bar_idx
+        self._current_bar_idx = bar_idx  # 供_generate_signal_v2使用
+        self._live_mode = live_mode
+        if live_mode and current_price > 0:
+            self._price_override = current_price
         self._refresh_daily_if_needed()
         return self._generate_signal_v2()
 
     def _generate_signal_v2(self) -> Optional[Dict[str, Any]]:
-        """信号生成核心逻辑"""
-        directives = self.evaluate_directives()
-        for d in directives:
-            if d.get("action") in ("OPEN_LONG", "OPEN_SHORT", "CLOSE_SHORT_AND_OPEN_LONG"):
-                logger.info(f"[{self.name}] 执行指令触发: {d}")
-                return d
-        for d in directives:
-            if d.get("action") == "REJECT_ENTRY":
-                logger.info(f"[{self.name}] 指令拒绝入场: {d}")
-                return None
-            if d.get("action") == "ADJUST_LEVERAGE_AND_SIZE":
-                logger.info(f"[{self.name}] 周末调整: {d}")
-        if not self.hedging.has_long and not self.hedging.has_short:
-            type_2b = self._detect_type_2b_buy()
-            if type_2b:
-                return type_2b
-            type_2_buy = self._detect_type_2_buy()
-            if type_2_buy:
-                return type_2_buy
-            type_2_sell = self._detect_type_2_sell()
-            if type_2_sell:
-                return type_2_sell
+        """信号生成核心逻辑 - 趋势跟踪优化版
+
+        策略核心：
+        1. 4H SMA(10,30)交叉信号（趋势一致）
+        2. 1H SMA(10,30)交叉信号（趋势一致）
+        3. 4H RSI极端值反转信号（<28/>72，趋势一致）
+        4. 4H/1H突破信号（趋势一致）
+        5. 4H趋势过滤：SMA20 > SMA50 仅做多，SMA20 < SMA50 仅做空
+        6. 止损/止盈: ATR 1.0 / 2.0
+        7. 3根K线冷却期
+        """
+        if self.df_4h.empty or len(self.df_4h) < 60:
+            return None
+
+        current_price = self._price_override if self._price_override > 0 else float(self.df_4h.iloc[-1]["close"])
+        atr_val = self.get_current_atr("4h")
+        if atr_val <= 0:
+            return None
+
+        closes = self.df_4h["close"].astype(float)
+        highs = self.df_4h["high"].astype(float)
+        lows = self.df_4h["low"].astype(float)
+
+        # 实盘模式：当前bar仍在形成，使用iloc[-2]代替iloc[-1]（上一根已完成bar）
+        _s = -2 if self._live_mode else -1  # 当前bar偏移
+        _sp = -3 if self._live_mode else -2  # 前一根bar偏移
+
+        # SMA (10,30)
+        sma10 = float(closes.rolling(10).mean().iloc[_s])
+        sma30 = float(closes.rolling(30).mean().iloc[_s])
+        sma10_prev = float(closes.rolling(10).mean().iloc[_sp]) if len(closes) >= 11 else sma10
+        sma30_prev = float(closes.rolling(30).mean().iloc[_sp]) if len(closes) >= 31 else sma30
+
+        # 趋势过滤：SMA(20) vs SMA(50)
+        sma20 = float(closes.rolling(20).mean().iloc[_s]) if len(closes) >= 20 else 0
+        sma50 = float(closes.rolling(50).mean().iloc[_s]) if len(closes) >= 50 else 0
+        trend_bull = sma20 > sma50 and sma50 > 0
+        trend_bear = sma20 < sma50 and sma50 > 0
+
+        # RSI（get_current_rsi已处理实盘模式偏移）
+        rsi_val = self.get_current_rsi()
+
+        # 突破（前20根K线）
+        lookback = 20
+        if self._live_mode:
+            highest_n = float(highs.iloc[-lookback-2:-2].max()) if len(highs) > lookback else 0
+            lowest_n = float(lows.iloc[-lookback-2:-2].min()) if len(lows) > lookback else 0
+        else:
+            highest_n = float(highs.iloc[-lookback-1:-1].max()) if len(highs) > lookback else 0
+            lowest_n = float(lows.iloc[-lookback-1:-1].min()) if len(lows) > lookback else 0
+
+        # 已有持仓：检查出场
         if self.hedging.has_long:
+            self._update_trailing_stop_long()
             exit_sig = self._check_long_exit()
             if exit_sig:
                 return exit_sig
-            hedge_sig = self._check_hedge_trigger("short")
-            if hedge_sig:
-                return hedge_sig
+            return None
+
         if self.hedging.has_short:
+            self._update_trailing_stop_short()
             exit_sig = self._check_short_exit()
             if exit_sig:
                 return exit_sig
-            hedge_sig = self._check_hedge_trigger("long")
-            if hedge_sig:
-                return hedge_sig
+            return None
+
+        # 冷却期检查：距上次入场至少3根K线（1H迭代=3小时，4H迭代=12小时）
+        if self._current_bar_idx is not None and self._current_bar_idx >= 0 and self._current_bar_idx - self._last_entry_bar < 3:
+            return None
+
+        # 1H SMA / 突破
+        if self.df_1h is not None and not self.df_1h.empty and len(self.df_1h) >= 30:
+            h1_closes = self.df_1h["close"].astype(float)
+            h1_highs = self.df_1h["high"].astype(float)
+            h1_lows = self.df_1h["low"].astype(float)
+            h1_sma10 = float(h1_closes.rolling(10).mean().iloc[_s]) if len(h1_closes) >= 10 else 0
+            h1_sma30 = float(h1_closes.rolling(30).mean().iloc[_s]) if len(h1_closes) >= 30 else 0
+            h1_sma10_prev = float(h1_closes.rolling(10).mean().iloc[_sp]) if len(h1_closes) >= 11 else h1_sma10
+            h1_sma30_prev = float(h1_closes.rolling(30).mean().iloc[_sp]) if len(h1_closes) >= 31 else h1_sma30
+            if self._live_mode:
+                h1_highest_20 = float(h1_highs.iloc[-22:-2].max()) if len(h1_highs) > 20 else 0
+                h1_lowest_20 = float(h1_lows.iloc[-22:-2].min()) if len(h1_lows) > 20 else 0
+            else:
+                h1_highest_20 = float(h1_highs.iloc[-21:-1].max()) if len(h1_highs) > 20 else 0
+                h1_lowest_20 = float(h1_lows.iloc[-21:-1].min()) if len(h1_lows) > 20 else 0
+        else:
+            h1_sma10 = h1_sma30 = h1_sma10_prev = h1_sma30_prev = 0
+            h1_highest_20 = h1_lowest_20 = 0
+
+        sma10_cross_up = sma10_prev <= sma30_prev and sma10 > sma30
+        sma10_cross_down = sma10_prev >= sma30_prev and sma10 < sma30
+
+        h1_sma10_cross_up = (h1_sma10_prev <= h1_sma30_prev and h1_sma10 > h1_sma30
+                             and h1_sma30 > 0)
+        h1_sma10_cross_down = (h1_sma10_prev >= h1_sma30_prev and h1_sma10 < h1_sma30
+                               and h1_sma30 > 0)
+
+        breakout_up = highest_n > 0 and current_price > highest_n
+        breakout_down = lowest_n > 0 and current_price < lowest_n
+        h1_breakout_up = h1_highest_20 > 0 and current_price > h1_highest_20
+        h1_breakout_down = h1_lowest_20 > 0 and current_price < h1_lowest_20
+
+        sl_mult = 1.0
+        tp_mult = 2.0
+
+        # === 做多信号（仅在上升趋势中） ===
+        if trend_bull:
+            if sma10_cross_up:
+                return self._build_long_signal(current_price, atr_val, sl_mult, tp_mult,
+                    f"SMA(10,30)金叉: RSI={rsi_val:.1f}")
+
+            if h1_sma10_cross_up:
+                return self._build_long_signal(current_price, atr_val, sl_mult, tp_mult,
+                    f"1H_SMA(10,30)金叉: RSI={rsi_val:.1f}")
+
+            if rsi_val < 28:
+                return self._build_long_signal(current_price, atr_val, sl_mult, tp_mult,
+                    f"RSI超卖反弹: RSI={rsi_val:.1f}")
+
+            if breakout_up:
+                return self._build_long_signal(current_price, atr_val, sl_mult, tp_mult,
+                    f"4H突破前高: RSI={rsi_val:.1f}")
+
+            if h1_breakout_up:
+                return self._build_long_signal(current_price, atr_val, sl_mult, tp_mult,
+                    f"1H突破前高: RSI={rsi_val:.1f}")
+
+        # === 做空信号（仅在下降趋势中） ===
+        if trend_bear:
+            if sma10_cross_down:
+                return self._build_short_signal(current_price, atr_val, sl_mult, tp_mult,
+                    f"SMA(10,30)死叉: RSI={rsi_val:.1f}")
+
+            if h1_sma10_cross_down:
+                return self._build_short_signal(current_price, atr_val, sl_mult, tp_mult,
+                    f"1H_SMA(10,30)死叉: RSI={rsi_val:.1f}")
+
+            if rsi_val > 72:
+                return self._build_short_signal(current_price, atr_val, sl_mult, tp_mult,
+                    f"RSI超买回落: RSI={rsi_val:.1f}")
+
+            if breakout_down:
+                return self._build_short_signal(current_price, atr_val, sl_mult, tp_mult,
+                    f"4H突破前低: RSI={rsi_val:.1f}")
+
+            if h1_breakout_down:
+                return self._build_short_signal(current_price, atr_val, sl_mult, tp_mult,
+                    f"1H突破前低: RSI={rsi_val:.1f}")
+
         return None
+
+    def _build_long_signal(self, price: float, atr: float, sl_mult: float, tp_mult: float,
+                           reason: str) -> Optional[Dict[str, Any]]:
+        """构建做多信号"""
+        stop_loss = self._calculate_stop_loss(price, atr, sl_mult, side="long")
+        take_profit = round(price + atr * tp_mult, 4)
+        size = self._calculate_position_size(price, stop_loss)
+        if size <= 0:
+            return None
+        self._last_entry_bar = self._current_bar_idx if self._current_bar_idx is not None else -1
+        return {
+            "action": "OPEN_LONG", "type": "trend_long",
+            "price": price, "stop_loss": stop_loss,
+            "take_profit": take_profit, "size": size,
+            "reason": reason,
+        }
+
+    def _build_short_signal(self, price: float, atr: float, sl_mult: float, tp_mult: float,
+                            reason: str) -> Optional[Dict[str, Any]]:
+        """构建做空信号"""
+        stop_loss = self._calculate_stop_loss(price, atr, sl_mult, side="short")
+        take_profit = round(price - atr * tp_mult, 4)
+        size = self._calculate_position_size(price, stop_loss)
+        if size <= 0:
+            return None
+        self._last_entry_bar = self._current_bar_idx if self._current_bar_idx is not None else -1
+        return {
+            "action": "OPEN_SHORT", "type": "trend_short",
+            "price": price, "stop_loss": stop_loss,
+            "take_profit": take_profit, "size": size,
+            "reason": reason,
+        }
 
     def _refresh_daily_if_needed(self) -> None:
         """每日 0:00 UTC+8 刷新日线趋势"""
@@ -1178,6 +1564,44 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
 
     # ─── 出场信号检查 ───
 
+    def _update_trailing_stop_long(self) -> None:
+        """多头移动止损：浮盈 > ATR * 0.8 时激活，止损上移至当前价 - ATR * 0.8"""
+        if self.hedging.long_stop_loss <= 0 or self.hedging.long_entry_price <= 0:
+            return
+        atr_val = self.get_current_atr("4h")
+        if atr_val <= 0:
+            return
+        current_price = float(self.df_4h.iloc[-1]["close"]) if not self.df_4h.empty else 0
+        if current_price <= 0:
+            return
+        # 浮盈超过 ATR * 0.8 时激活移动止损
+        profit = current_price - self.hedging.long_entry_price
+        if profit > atr_val * 0.8:
+            new_sl = round(current_price - atr_val * 0.8, 4)
+            if new_sl > self.hedging.long_stop_loss:
+                old_sl = self.hedging.long_stop_loss
+                self.hedging.long_stop_loss = new_sl
+                logger.debug(f"[{self.name}] 多头移动止损: {old_sl:.4f} → {new_sl:.4f}")
+
+    def _update_trailing_stop_short(self) -> None:
+        """空头移动止损：浮盈 > ATR * 0.8 时激活，止损下移至当前价 + ATR * 0.8"""
+        if self.hedging.short_stop_loss <= 0 or self.hedging.short_entry_price <= 0:
+            return
+        atr_val = self.get_current_atr("4h")
+        if atr_val <= 0:
+            return
+        current_price = float(self.df_4h.iloc[-1]["close"]) if not self.df_4h.empty else 0
+        if current_price <= 0:
+            return
+        # 浮盈超过 ATR * 0.8 时激活移动止损
+        profit = self.hedging.short_entry_price - current_price
+        if profit > atr_val * 0.8:
+            new_sl = round(current_price + atr_val * 0.8, 4)
+            if new_sl < self.hedging.short_stop_loss:
+                old_sl = self.hedging.short_stop_loss
+                self.hedging.short_stop_loss = new_sl
+                logger.debug(f"[{self.name}] 空头移动止损: {old_sl:.4f} → {new_sl:.4f}")
+
     def _check_long_exit(self) -> Optional[Dict]:
         """检查做多出场"""
         if self.hedging.long_stop_loss > 0:
@@ -1188,10 +1612,6 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
             if current_price >= self.hedging.long_take_profit:
                 return {"action": "CLOSE_LONG", "price": current_price,
                         "reason": f"止盈触发 (TP={self.hedging.long_take_profit:.4f})"}
-        if self._chan_4h.has_top_fractal and self._chan_4h.beichi_top:
-            current_price = float(self.df_4h.iloc[-1]["close"]) if not self.df_4h.empty else 0
-            return {"action": "CLOSE_LONG", "price": current_price,
-                    "reason": "4H顶背驰，做多出场"}
         return None
 
     def _check_short_exit(self) -> Optional[Dict]:
@@ -1204,10 +1624,6 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
             if current_price <= self.hedging.short_take_profit:
                 return {"action": "CLOSE_SHORT", "price": current_price,
                         "reason": f"止盈触发 (TP={self.hedging.short_take_profit:.4f})"}
-        if self._chan_4h.has_bottom_fractal and self._chan_4h.beichi_bottom:
-            current_price = float(self.df_4h.iloc[-1]["close"]) if not self.df_4h.empty else 0
-            return {"action": "CLOSE_SHORT", "price": current_price,
-                    "reason": "4H底背驰，做空出场"}
         return None
 
     # ─── 对冲逻辑 ───
@@ -1290,7 +1706,7 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
             self._market_regime = MarketRegime.TRENDING_UP
             self.trades.append(TradeRecordV2(
                 timestamp=pd.Timestamp.now(), action="OPEN_LONG",
-                price=price, quantity=size, reason=signal.get("reason", "")))
+                price=price, quantity=size, pnl=0.0, reason=signal.get("reason", "")))
         elif action == "OPEN_SHORT":
             self.hedging.short_qty += size
             self.hedging.short_entry_price = price
@@ -1305,27 +1721,37 @@ class CryptoChan4HMasterStrategy(BaseStrategy):
             self._market_regime = MarketRegime.TRENDING_DOWN
             self.trades.append(TradeRecordV2(
                 timestamp=pd.Timestamp.now(), action="OPEN_SHORT",
-                price=price, quantity=size, reason=signal.get("reason", "")))
+                price=price, quantity=size, pnl=0.0, reason=signal.get("reason", "")))
         elif action == "CLOSE_LONG":
             if self.hedging.long_qty > 0:
                 pnl = (price - self.hedging.long_entry_price) * self.hedging.long_qty
-                self.trades[-1].pnl = pnl if self.trades else 0
+                self.trades.append(TradeRecordV2(
+                    timestamp=pd.Timestamp.now(), action="CLOSE_LONG",
+                    price=price, quantity=self.hedging.long_qty, pnl=pnl,
+                    reason=signal.get("reason", "")))
+                self.current_capital += pnl
             self.hedging.long_qty = 0
             self.hedging.long_entry_price = 0
             self.hedging.long_stop_loss = 0
             self.hedging.long_take_profit = 0
             self.hedging.long_tp1 = 0
             self.hedging.long_tp1_hit = False
+            self._last_close_bar = len(self.df_4h) - 1 if not self.df_4h.empty else -999
         elif action == "CLOSE_SHORT":
             if self.hedging.short_qty > 0:
                 pnl = (self.hedging.short_entry_price - price) * self.hedging.short_qty
-                self.trades[-1].pnl = pnl if self.trades else 0
+                self.trades.append(TradeRecordV2(
+                    timestamp=pd.Timestamp.now(), action="CLOSE_SHORT",
+                    price=price, quantity=self.hedging.short_qty, pnl=pnl,
+                    reason=signal.get("reason", "")))
+                self.current_capital += pnl
             self.hedging.short_qty = 0
             self.hedging.short_entry_price = 0
             self.hedging.short_stop_loss = 0
             self.hedging.short_take_profit = 0
             self.hedging.short_tp1 = 0
             self.hedging.short_tp1_hit = False
+            self._last_close_bar = len(self.df_4h) - 1 if not self.df_4h.empty else -999
         elif action == "CLOSE_SHORT_AND_OPEN_LONG":
             if self.hedging.short_qty > 0:
                 pnl = (self.hedging.short_entry_price - price) * self.hedging.short_qty
@@ -1756,7 +2182,9 @@ class CryptoChan4HBacktestEngine:
     """
     Crypto_Chan_4H_Master_v1 回测引擎
 
-    逐根 4H K 线推进，调用策略信号生成和执行
+    支持两种模式：
+    - 4H模式：逐根4H K线推进（默认）
+    - 1H模式：逐根1H K线推进，使用1H收盘价作为入场价，4H数据用于SMA/ATR计算
     """
 
     def __init__(self, config: StrategyConfigRoot, initial_capital: float = 10000.0,
@@ -1764,32 +2192,39 @@ class CryptoChan4HBacktestEngine:
         self.config = config
         self.initial_capital = initial_capital
         self.commission = commission
-        self.strategy = CryptoChan4HMasterStrategy(config)
+        self.strategy = CryptoChan4HMasterStrategy(config, fast_mode=True)
         self.strategy.current_capital = initial_capital
         self.strategy.initial_capital = initial_capital
 
     def run(self, df_4h: pd.DataFrame, df_1h: pd.DataFrame = None,
             df_15m: pd.DataFrame = None, df_daily: pd.DataFrame = None,
-            progress: bool = True) -> BacktestReportV2:
+            progress: bool = True, use_1h_iteration: bool = True) -> BacktestReportV2:
         """
         运行回测
 
         Args:
-            df_4h: 4H K线数据
-            df_1h: 1H K线数据
+            df_4h: 4H K线数据（用于SMA/ATR计算）
+            df_1h: 1H K线数据（use_1h_iteration=True时作为主迭代数据）
             df_15m: 15M K线数据
             df_daily: 日线数据
             progress: 是否显示进度条
+            use_1h_iteration: 是否使用1H K线迭代（默认True，4倍交易频率）
 
         Returns:
             BacktestReportV2: 回测报告
         """
-        logger.info(f"[Backtest] 开始回测: {len(df_4h)} 根4H K线, 初始资金=${self.initial_capital:,.2f}")
+        if use_1h_iteration and df_1h is not None and not df_1h.empty:
+            return self._run_1h_iteration(df_4h, df_1h, df_15m, df_daily, progress)
+        return self._run_4h_iteration(df_4h, df_1h, df_15m, df_daily, progress)
+
+    def _run_4h_iteration(self, df_4h, df_1h, df_15m, df_daily, progress):
+        """4H K线迭代（原始模式）"""
+        logger.info(f"[Backtest] 开始回测(4H): {len(df_4h)} 根4H K线, 初始资金=${self.initial_capital:,.2f}")
         iterator = range(len(df_4h))
         if progress:
             try:
                 from tqdm import tqdm
-                iterator = tqdm(iterator, desc="回测中")
+                iterator = tqdm(iterator, desc="回测中(4H)")
             except ImportError:
                 pass
         for i in iterator:
@@ -1807,6 +2242,7 @@ class CryptoChan4HBacktestEngine:
                     mask = df_15m["open_time"] <= last_4h_time
                     df_15m_slice = df_15m[mask].copy()
             df_daily_slice = df_daily.copy() if df_daily is not None else None
+            self.strategy._price_override = 0.0
             self.strategy.inject_data(df_4h_slice, df_1h_slice, df_15m_slice, df_daily_slice)
             signal = self.strategy.generate_signal(bar_idx=i)
             if signal:
@@ -1822,8 +2258,56 @@ class CryptoChan4HBacktestEngine:
                 self.strategy.apply_signal(signal)
         report = generate_backtest_report(self.strategy, self.initial_capital)
         logger.info(f"[Backtest] 回测完成: 总交易={report.total_trades}, "
-                    f"收益率={report.total_return*100:.2f}%, "
-                    f"最大回撤={report.max_drawdown*100:.2f}%")
+                    f"收益率={report.total_return*100:.2f}%")
+        return report
+
+    def _run_1h_iteration(self, df_4h, df_1h, df_15m, df_daily, progress):
+        """1H K线迭代模式 - 1H收盘价作为入场价，4H用于SMA/ATR计算"""
+        logger.info(f"[Backtest] 开始回测(1H): {len(df_1h)} 根1H K线, 初始资金=${self.initial_capital:,.2f}")
+        iterator = range(len(df_1h))
+        if progress:
+            try:
+                from tqdm import tqdm
+                iterator = tqdm(iterator, desc="回测中(1H)")
+            except ImportError:
+                pass
+        for i in iterator:
+            current_1h_time = df_1h.iloc[i].get("open_time", None)
+            if current_1h_time is None:
+                continue
+            # 1H数据切片
+            df_1h_slice = df_1h.iloc[:i + 1].copy()
+            # 4H数据切片到当前1H时间
+            mask_4h = df_4h["open_time"] <= current_1h_time
+            df_4h_slice = df_4h[mask_4h].copy()
+            if df_4h_slice.empty:
+                continue
+            # 15M数据切片
+            df_15m_slice = None
+            if df_15m is not None and not df_15m.empty:
+                mask_15m = df_15m["open_time"] <= current_1h_time
+                df_15m_slice = df_15m[mask_15m].copy()
+            df_daily_slice = df_daily.copy() if df_daily is not None else None
+            # 注入数据（4H用于SMA/ATR，1H用于信号）
+            self.strategy._price_override = float(df_1h.iloc[i]["close"])
+            self.strategy.inject_data(df_4h_slice, df_1h_slice, df_15m_slice, df_daily_slice)
+            signal = self.strategy.generate_signal(bar_idx=i)
+            if signal:
+                price = signal.get("price", 0)
+                size = signal.get("size", 0)
+                action = signal.get("action", "")
+                # 用1H收盘价作为实际成交价
+                signal["price"] = self.strategy._price_override
+                if "OPEN" in action:
+                    cost = self.strategy._price_override * size * self.commission
+                    self.strategy.current_capital -= cost
+                elif "CLOSE" in action:
+                    cost = self.strategy._price_override * size * self.commission
+                    self.strategy.current_capital -= cost
+                self.strategy.apply_signal(signal)
+        report = generate_backtest_report(self.strategy, self.initial_capital)
+        logger.info(f"[Backtest] 回测完成: 总交易={report.total_trades}, "
+                    f"收益率={report.total_return*100:.2f}%")
         return report
 
 

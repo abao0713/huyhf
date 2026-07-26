@@ -188,25 +188,46 @@ class BinanceRestClient:
         """下单
         :param symbol: 交易对，如 "BTCUSDT"
         :param side: 买入或卖出 "BUY" / "SELL"
-        :param position_side: 持仓方向 "LONG" / "SHORT"（对冲模式必需，单边模式不传）
+        :param position_side: 持仓方向 "LONG" / "SHORT"（对冲模式必需，单边模式忽略）
         :param order_type: 订单类型 "LIMIT" / "MARKET"
         :param quantity: 数量
         :param price: 价格（限价单必需）
         :param time_in_force: 有效期限 "GTC" / "IOC" / "FOK"
         :return: 下单结果
+
+        position_side 根据 self._is_hedge_mode 动态构造：
+        - 单向模式 (False): 使用 BOTH
+        - 双向模式 (True): 使用传入的 position_side (LONG/SHORT)
+        - 未检测 (None): 默认 BOTH 并告警
         """
+        # 根据持仓模式动态构造 position_side
+        if self._is_hedge_mode is True:
+            # 双向持仓模式：使用传入的 position_side (LONG/SHORT)
+            if position_side is None or position_side == "BOTH":
+                logger.warning(f"[place_order] 对冲模式下 position_side={position_side} 无效，应为 LONG/SHORT，回退为 BOTH")
+                pos_side = NewOrderPositionSideEnum("BOTH")
+            else:
+                pos_side = NewOrderPositionSideEnum(position_side)
+        elif self._is_hedge_mode is False:
+            # 单向持仓模式：使用 BOTH
+            pos_side = NewOrderPositionSideEnum("BOTH")
+        else:
+            # 未检测持仓模式：默认单向，告警
+            logger.warning("[place_order] 持仓模式未检测 (self._is_hedge_mode=None)，默认使用 BOTH")
+            pos_side = NewOrderPositionSideEnum("BOTH")
+
         params = {
             "symbol": symbol,
             "side": NewOrderSideEnum(side),
             "type": order_type,
             "quantity": quantity,
-            "position_side": "BOTH",
+            "position_side": pos_side,
         }
         if order_type == "LIMIT":
             params["price"] = price
             params["time_in_force"] = NewOrderTimeInForceEnum(time_in_force)
 
-        logger.info(f"[place_order] Request: symbol={symbol}, side={side}, type={order_type}, quantity={quantity}, price={price}, position_side={position_side}")
+        logger.info(f"[place_order] Request: symbol={symbol}, side={side}, type={order_type}, quantity={quantity}, price={price}, position_side={position_side}, hedge_mode={self._is_hedge_mode}")
 
         try:
             response = await self._run_sync(self._sdk.rest_api.new_order, **params)
@@ -411,7 +432,7 @@ class BinanceRestClient:
         :return: True-对冲模式，False-单边模式
         """
         try:
-            response = await self._run_sync(self._sdk.rest_api.get_position_mode)
+            response = await self._run_sync(self._sdk.rest_api.get_current_position_mode)
             data = _to_dict(response.data())
             self._is_hedge_mode = data.get("dualSidePosition", False)
             logger.info(f"[detect_hedge_mode] Detected: {self._is_hedge_mode}")
@@ -421,7 +442,47 @@ class BinanceRestClient:
             # 默认使用单边模式
             self._is_hedge_mode = False
             return False
-    
+
+    async def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
+        """设置杠杆
+        :param symbol: 交易对，如 "ETHUSDT"
+        :param leverage: 杠杆倍数 (1-125)
+        :return: 下单结果 dict
+        """
+        params = {
+            "symbol": symbol,
+            "leverage": leverage,
+        }
+        logger.info(f"[set_leverage] Request: symbol={symbol}, leverage={leverage}")
+        try:
+            response = await self._run_sync(self._sdk.rest_api.change_initial_leverage, **params)
+            result = _to_dict(response.data())
+            logger.info(f"[set_leverage] symbol={symbol}, leverage={leverage} -> success")
+            return result
+        except Exception as e:
+            logger.error(f"[set_leverage] Failed: {e}")
+            return {"error": str(e), "msg": str(e)}
+
+    async def set_position_mode(self, hedge: bool) -> Dict[str, Any]:
+        """设置持仓模式
+        :param hedge: True-双向持仓(对冲), False-单向持仓
+        :return: 结果 dict
+        """
+        # SDK 要求 dual_side_position 为字符串 "true"/"false"
+        params = {
+            "dual_side_position": "true" if hedge else "false",
+        }
+        logger.info(f"[set_position_mode] Request: hedge={hedge}")
+        try:
+            response = await self._run_sync(self._sdk.rest_api.change_position_mode, **params)
+            result = _to_dict(response.data())
+            self._is_hedge_mode = hedge
+            logger.info(f"[set_position_mode] hedge={hedge} -> success")
+            return result
+        except Exception as e:
+            logger.error(f"[set_position_mode] Failed: {e}")
+            return {"error": str(e), "msg": str(e)}
+
     def _cache_precision(self, exchange_info: Dict):
         """缓存交易对精度信息"""
         try:

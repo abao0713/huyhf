@@ -410,6 +410,8 @@ class CryptoChanLiveExecutor:
         dingtalk_token: str = None,
         dingtalk_secret: str = None,
         max_price_deviation: float = 0.002,
+        leverage: int = 5,
+        position_mode: str = None,
     ):
         self.config = config
         self.initial_capital = initial_capital
@@ -417,6 +419,8 @@ class CryptoChanLiveExecutor:
         self.symbol = config.metadata.trading_pairs[0] if config.metadata.trading_pairs else "ETH/USDT"
         self.use_realtime = use_realtime
         self.max_price_deviation = max_price_deviation  # 限价单回退市价单时的最大价格偏差（默认0.2%）
+        self._leverage = leverage
+        self._position_mode = position_mode
 
         # 策略实例
         self.strategy = CryptoChan4HMasterStrategy(config)
@@ -450,6 +454,7 @@ class CryptoChanLiveExecutor:
         self._bar_index: int = 0
         self._executed_trades: List[Dict] = []
         self._pending_orders: List[Dict] = []  # 待查询的订单ID
+        self._is_hedge_mode: bool = False
 
         # 心跳日志：周期性存活状态（可通过环境变量 HEARTBEAT_INTERVAL_SEC 配置，默认 300 秒）
         self._heartbeat_interval_sec: float = float(os.environ.get("HEARTBEAT_INTERVAL_SEC", "300"))
@@ -520,6 +525,28 @@ class CryptoChanLiveExecutor:
         self.initial_capital = self._balance
         _logger.info(f"[Live] 平仓后最终可用余额: ${self._balance:,.2f}（已设为初始资金）")
 
+        # 检测账户持仓模式（单向/双向）
+        self._is_hedge_mode = await self.client.detect_hedge_mode()
+        _logger.info(f"[启动] 持仓模式: {'双向(对冲)' if self._is_hedge_mode else '单向'}")
+
+        # 可选：强制设置持仓模式
+        if self._position_mode is not None:
+            want_hedge = (self._position_mode == "hedge")
+            _logger.info(f"[启动] 强制设置持仓模式 -> {'双向(对冲)' if want_hedge else '单向'}")
+            pm_result = await self.client.set_position_mode(want_hedge)
+            if "error" not in pm_result:
+                self._is_hedge_mode = await self.client.detect_hedge_mode()
+                _logger.info(f"[启动] 持仓模式设置后重新检测: {'双向(对冲)' if self._is_hedge_mode else '单向'}")
+            else:
+                _logger.warning(f"[启动] 设置持仓模式失败: {pm_result}")
+
+        # 设置杠杆
+        lev_result = await self.client.set_leverage(symbol_clean, self._leverage)
+        if "error" not in lev_result:
+            _logger.info(f"[启动] 杠杆已设置: {symbol_clean} x{self._leverage}")
+        else:
+            _logger.warning(f"[启动] 设置杠杆失败: {lev_result}")
+
         # 发送策略启动通知
         self._send_dingtalk_status("started", {
             "symbol": self.symbol,
@@ -569,6 +596,31 @@ class CryptoChanLiveExecutor:
         except Exception as e:
             _logger.debug(f"[Live] 余额刷新异常(使用缓存值): {e}")
         return self._balance
+
+    def _resolve_side_position_side(self, action: str):
+        """根据动作和持仓模式计算 side 与 position_side
+
+        返回 (side, position_side):
+        - side: BUY / SELL（CLOSE_LONG→SELL, CLOSE_SHORT→BUY, OPEN_LONG→BUY, OPEN_SHORT→SELL）
+        - position_side: 单向模式恒为 BOTH；双向模式根据动作 LONG/SHORT/BOTH
+        """
+        if action.startswith("CLOSE_SHORT") or action.startswith("OPEN_LONG"):
+            side = "BUY"
+        elif action.startswith("CLOSE_LONG") or action.startswith("OPEN_SHORT"):
+            side = "SELL"
+        else:
+            # 兜底：包含 LONG 视为多方向(BUY)，否则 SELL
+            side = "BUY" if "LONG" in action else "SELL"
+        if self._is_hedge_mode:
+            if "LONG" in action:
+                position_side = "LONG"
+            elif "SHORT" in action:
+                position_side = "SHORT"
+            else:
+                position_side = "BOTH"
+        else:
+            position_side = "BOTH"
+        return side, position_side
 
     async def _close_all_positions(self) -> None:
         """启动前检查仓位，撤销挂单并市价平仓所有持仓
@@ -638,8 +690,9 @@ class CryptoChanLiveExecutor:
                     side=side,
                     order_type="MARKET",
                     quantity=abs_qty,
+                    position_side=position_side,
                 )
-                
+
                 if "error" not in result:
                     fill_price = float(result.get("avgPrice", 0) or 0)
                     _logger.info(
@@ -792,7 +845,7 @@ class CryptoChanLiveExecutor:
             reason = order.get("reason", "")
             _logger.debug(f"[{mode_tag}] 订单[{idx+1}/{len(orders)}]: action={action}, price={price:.4f}, qty={quantity:.4f}, reason={reason}")
 
-            side = "BUY" if "LONG" in action else "SELL"
+            side, position_side = self._resolve_side_position_side(action)
             is_close = action.startswith("CLOSE")
 
             if is_close:
@@ -803,7 +856,7 @@ class CryptoChanLiveExecutor:
             # 调用统一的客户端接口
             _logger.debug(
                 f"[{mode_tag}] 下单请求: symbol={symbol_clean}, side={side}, "
-                f"type={order_type}, qty={quantity:.4f}, price={price:.4f}"
+                f"type={order_type}, qty={quantity:.4f}, price={price:.4f}, position_side={position_side}"
             )
             result = await self.client.place_order(
                 symbol=symbol_clean,
@@ -811,6 +864,7 @@ class CryptoChanLiveExecutor:
                 order_type=order_type,
                 quantity=quantity,
                 price=price,
+                position_side=position_side,
             )
             _logger.debug(f"[{mode_tag}] 下单响应: {json.dumps(result, default=str, ensure_ascii=False)}")
 
@@ -992,13 +1046,13 @@ class CryptoChanLiveExecutor:
                     _logger.info(f"[历史] bar={i} 新增{len(new_trades)}笔交易记录")
                     for trade_idx, trade in enumerate(new_trades):
                         symbol_clean = self.symbol.replace("/", "")
-                        side = "BUY" if "LONG" in trade.action else "SELL"
+                        side, position_side = self._resolve_side_position_side(trade.action)
                         is_close = trade.action.startswith("CLOSE")
                         order_type = "MARKET" if is_close else "LIMIT"
                         _logger.debug(
                             f"[历史] bar={i} 交易[{trade_idx+1}/{len(new_trades)}]: "
                             f"action={trade.action}, price={trade.price:.4f}, qty={trade.quantity:.4f}, "
-                            f"下单参数: symbol={symbol_clean}, side={side} "
+                            f"下单参数: symbol={symbol_clean}, side={side}, position_side={position_side} "
                             f"type={order_type}"
                         )
 
@@ -1008,6 +1062,7 @@ class CryptoChanLiveExecutor:
                             order_type=order_type,
                             quantity=trade.quantity,
                             price=trade.price,
+                            position_side=position_side,
                         )
                         _logger.debug(f"[历史] bar={i} 下单响应: {json.dumps(result, default=str, ensure_ascii=False)}")
 
@@ -1053,6 +1108,7 @@ class CryptoChanLiveExecutor:
                                         side=side,
                                         order_type="MARKET",
                                         quantity=trade.quantity,
+                                        position_side=position_side,
                                     )
                                     _logger.debug(f"[历史] bar={i} 市价单回退响应: {json.dumps(result, default=str, ensure_ascii=False)}")
                                     if result and "error" not in result:
@@ -1240,23 +1296,44 @@ class CryptoChanLiveExecutor:
                         _logger.info(f"[实时] 新增{len(new_trades)}笔交易记录")
                         for trade_idx, trade in enumerate(new_trades):
                             symbol_clean = self.symbol.replace("/", "")
-                            side = "BUY" if "LONG" in trade.action else "SELL"
+                            side, position_side = self._resolve_side_position_side(trade.action)
 
                             is_close = trade.action.startswith("CLOSE")
                             order_type = "MARKET" if is_close else "LIMIT"
                             _logger.debug(
                                 f"[实时] 交易[{trade_idx+1}/{len(new_trades)}]: "
                                 f"action={trade.action}, price={trade.price:.4f}, qty={trade.quantity:.4f}, "
-                                f"下单参数: symbol={symbol_clean}, side={side} "
+                                f"下单参数: symbol={symbol_clean}, side={side}, position_side={position_side} "
                                 f"type={order_type}"
                             )
-                            
+
+                            # 保证金上限校验：qty * price 不得超过 可用资金 * 杠杆
+                            max_notional = self._balance * self._leverage
+                            if trade.quantity * trade.price > max_notional and trade.price > 0:
+                                capped_qty = max_notional / trade.price
+                                # 按 stepSize 取整（使用客户端精度）
+                                try:
+                                    precision = self.client._get_precision(symbol_clean)
+                                    step = precision.get("step_size", 0.001)
+                                    capped_qty = max(round(capped_qty / step) * step, step)
+                                    # 按 step 的小数位数格式化
+                                    decimals = max(0, -int(f"{step:e}".split("e")[1])) if step < 1 else 0
+                                    capped_qty = round(capped_qty, decimals)
+                                except Exception:
+                                    capped_qty = round(capped_qty, 3)
+                                _logger.warning(
+                                    f"[实时] 保证金上限收敛: qty {trade.quantity:.4f} -> {capped_qty:.4f} "
+                                    f"(notional {trade.quantity*trade.price:.2f} > max {max_notional:.2f})"
+                                )
+                                trade.quantity = capped_qty
+
                             result = await self.client.place_order(
                                 symbol=symbol_clean,
                                 side=side,
                                 order_type=order_type,
                                 quantity=trade.quantity,
                                 price=trade.price,
+                                position_side=position_side,
                             )
                             _logger.debug(f"[实时] 下单响应: {json.dumps(result, default=str, ensure_ascii=False)}")
                             
@@ -1298,6 +1375,7 @@ class CryptoChanLiveExecutor:
                                             side=side,
                                             order_type="MARKET",
                                             quantity=trade.quantity,
+                                            position_side=position_side,
                                         )
                                         _logger.debug(f"[实时] 市价单回退响应: {json.dumps(result, default=str, ensure_ascii=False)}")
                                         if result and "error" not in result:
@@ -1500,6 +1578,8 @@ def main():
     parser.add_argument("--status", action="store_true", help="查看守护进程状态")
     parser.add_argument("--restart", action="store_true", help="重启守护进程")
     parser.add_argument("--max-deviation", type=float, default=0.002, help="限价单回退市价单的最大价格偏差（默认0.002=0.2%%）")
+    parser.add_argument("--leverage", type=int, default=20, help="杠杆倍数（默认 20）")
+    parser.add_argument("--position-mode", choices=["one-way", "hedge"], default=None, help="强制设置持仓模式（默认仅检测不改）")
     args = parser.parse_args()
 
     script_path = sys.argv[0]
@@ -1604,6 +1684,8 @@ def main():
         dingtalk_token=args.dingtalk_token,
         dingtalk_secret=args.dingtalk_secret,
         max_price_deviation=args.max_deviation,
+        leverage=args.leverage,
+        position_mode=args.position_mode,
     )
     
     # 注册全局执行器实例（用于信号处理）
